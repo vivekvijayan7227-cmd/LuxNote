@@ -74,6 +74,10 @@ class NativeAudioEngine {
         if (isAvailable) setVocalFocus(nativeHandle, mode, amount)
     }
 
+    fun setStemBalance(vocalGain: Float, instrumentGain: Float) {
+        if (isAvailable) setStemBalance(nativeHandle, vocalGain, instrumentGain)
+    }
+
     fun setDspEnabled(enabled: Boolean) {
         if (isAvailable) setDspEnabled(nativeHandle, enabled)
     }
@@ -113,6 +117,7 @@ class NativeAudioEngine {
     private external fun setParametricBand(handle: Long, band: Int, enabled: Boolean, type: Int, freq: Float, gainDb: Float, q: Float)
     private external fun setPreampGain(handle: Long, gainDb: Float)
     private external fun setVocalFocus(handle: Long, mode: Int, amount: Float)
+    private external fun setStemBalance(handle: Long, vocalGain: Float, instrumentGain: Float)
     private external fun setDspEnabled(handle: Long, enabled: Boolean)
     private external fun processInterleavedStereo(handle: Long, buffer: FloatArray, frameCount: Int)
     private external fun computeFftBands(handle: Long, outBands: FloatArray, bandCount: Int)

@@ -15,6 +15,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -41,6 +42,7 @@ import com.audioplayer.hires.ui.MainViewModel
 import com.audioplayer.hires.ui.StudioScreen
 import com.audioplayer.hires.ui.components.FftVisualizer
 import com.audioplayer.hires.ui.components.PlaybackSeekBar
+import com.audioplayer.hires.ui.components.TrackArtwork
 import com.audioplayer.hires.ui.theme.*
 
 /**
@@ -97,9 +99,10 @@ fun NowPlayingScreen(viewModel: MainViewModel) {
             .fillMaxSize()
             .background(StudioColors.Background)
             .statusBarsPadding()
-            .padding(horizontal = 20.dp, vertical = 8.dp),
+            .padding(horizontal = 20.dp, vertical = 8.dp)
+            .verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.SpaceBetween
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         // 1. Top Bar (Image 1, 2, 3): Back button on left, Title, Favorite Heart & Menu on right
         Row(
@@ -200,62 +203,76 @@ fun NowPlayingScreen(viewModel: MainViewModel) {
 
         // 2. Center Stage (Image 1, 2, 3): Vinyl Disc / Artwork OR Synchronized Lyrics View
         if (!showLyricsMode) {
-            Box(
+            Surface(
                 modifier = Modifier
-                    .size(240.dp)
-                    .shadow(16.dp, RoundedCornerShape(24.dp), spotColor = StudioColors.Blue.copy(alpha = 0.2f))
-                    .clip(RoundedCornerShape(24.dp))
-                    .background(
-                        Brush.radialGradient(
-                            colors = listOf(
-                                StudioColors.SurfaceElevated,
-                                StudioColors.Surface,
-                                StudioColors.Background
-                            )
-                        )
-                    )
-                    .border(1.dp, StudioColors.Divider, RoundedCornerShape(24.dp))
+                    .sizeIn(minWidth = 200.dp, maxWidth = 260.dp, minHeight = 200.dp, maxHeight = 260.dp)
+                    .aspectRatio(1f)
+                    .shadow(16.dp, RoundedCornerShape(20.dp), spotColor = StudioColors.Blue.copy(alpha = 0.2f))
+                    .clip(RoundedCornerShape(20.dp))
+                    .border(1.dp, StudioColors.Divider, RoundedCornerShape(20.dp))
                     .clickable { showLyricsMode = true },
-                contentAlignment = Alignment.Center
+                color = StudioColors.SurfaceElevated
             ) {
-                // Vinyl Record with concentric grooves and center gold hub (Image 3)
-                Box(
-                    modifier = Modifier
-                        .size(210.dp)
-                        .clip(CircleShape)
-                        .background(
-                            Brush.radialGradient(
-                                colors = listOf(
-                                    Color(0xFF202738),
-                                    Color(0xFF111622),
-                                    Color(0xFF07090E)
-                                )
-                            )
-                        )
-                        .border(1.dp, StudioColors.Divider, CircleShape)
-                        .rotate(if (status == PlayerStatus.PLAYING) angle else 0f),
-                    contentAlignment = Alignment.Center
+                TrackArtwork(
+                    artworkUri = track?.artworkUri,
+                    trackUri = track?.uriString,
+                    contentDescription = "Album art for ${track?.title}",
+                    modifier = Modifier.fillMaxSize()
                 ) {
-                    // Concentric vinyl grooves
-                    Box(modifier = Modifier.size(170.dp).border(0.8.dp, Color(0xFF2A3448).copy(alpha = 0.5f), CircleShape))
-                    Box(modifier = Modifier.size(130.dp).border(0.8.dp, Color(0xFF2A3448).copy(alpha = 0.4f), CircleShape))
-                    Box(modifier = Modifier.size(90.dp).border(0.8.dp, Color(0xFF2A3448).copy(alpha = 0.3f), CircleShape))
-
-                    // Center Gold Acoustic Hub (Image 3)
+                    // Stylized Vinyl Record Fallback
                     Box(
                         modifier = Modifier
-                            .size(62.dp)
-                            .clip(CircleShape)
+                            .fillMaxSize()
                             .background(
-                                Brush.linearGradient(
-                                    listOf(StudioColors.GoldHighlight, StudioColors.Gold)
+                                Brush.radialGradient(
+                                    colors = listOf(
+                                        StudioColors.SurfaceElevated,
+                                        StudioColors.Surface,
+                                        StudioColors.Background
+                                    )
                                 )
                             ),
                         contentAlignment = Alignment.Center
                     ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text("HI-RES", color = StudioColors.Background, fontSize = 9.sp, fontWeight = FontWeight.Black)
-                            Text(track?.format ?: "FLAC", color = StudioColors.Background, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Box(
+                            modifier = Modifier
+                                .size(210.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    Brush.radialGradient(
+                                        colors = listOf(
+                                            Color(0xFF202738),
+                                            Color(0xFF111622),
+                                            Color(0xFF07090E)
+                                        )
+                                    )
+                                )
+                                .border(1.dp, StudioColors.Divider, CircleShape)
+                                .rotate(if (status == PlayerStatus.PLAYING) angle else 0f),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            // Concentric vinyl grooves
+                            Box(modifier = Modifier.size(170.dp).border(0.8.dp, Color(0xFF2A3448).copy(alpha = 0.5f), CircleShape))
+                            Box(modifier = Modifier.size(130.dp).border(0.8.dp, Color(0xFF2A3448).copy(alpha = 0.4f), CircleShape))
+                            Box(modifier = Modifier.size(90.dp).border(0.8.dp, Color(0xFF2A3448).copy(alpha = 0.3f), CircleShape))
+
+                            // Center Gold Acoustic Hub
+                            Box(
+                                modifier = Modifier
+                                    .size(62.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        Brush.linearGradient(
+                                            listOf(StudioColors.GoldHighlight, StudioColors.Gold)
+                                        )
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text("HI-RES", color = StudioColors.Background, fontSize = 11.sp, fontWeight = FontWeight.Black)
+                                    Text(track?.format ?: "FLAC", color = StudioColors.Background, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
                         }
                     }
                 }
@@ -388,11 +405,11 @@ fun NowPlayingScreen(viewModel: MainViewModel) {
             // Shuffle
             IconButton(
                 onClick = { viewModel.toggleShuffle() },
-                modifier = Modifier.size(46.dp)
+                modifier = Modifier.size(48.dp)
             ) {
                 Icon(
                     imageVector = Icons.Default.Shuffle,
-                    contentDescription = "Shuffle",
+                    contentDescription = if (shuffleEnabled) "Shuffle: Enabled" else "Shuffle: Disabled",
                     tint = if (shuffleEnabled) StudioColors.Blue else StudioColors.TextMuted,
                     modifier = Modifier.size(24.dp)
                 )
@@ -411,7 +428,7 @@ fun NowPlayingScreen(viewModel: MainViewModel) {
                 )
             }
 
-            // Prominent 72dp Champagne Gold Play/Pause Button (Spec & Image 1, 2)
+            // Prominent 72dp Champagne Gold Play/Pause Button
             Surface(
                 shape = CircleShape,
                 color = StudioColors.Gold,
@@ -424,7 +441,7 @@ fun NowPlayingScreen(viewModel: MainViewModel) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
                         imageVector = if (status == PlayerStatus.PLAYING) Icons.Default.Pause else Icons.Default.PlayArrow,
-                        contentDescription = "Play/Pause",
+                        contentDescription = if (status == PlayerStatus.PLAYING) "Pause playback" else "Start playback",
                         tint = StudioColors.Background,
                         modifier = Modifier.size(40.dp)
                     )
@@ -447,11 +464,11 @@ fun NowPlayingScreen(viewModel: MainViewModel) {
             // Repeat
             IconButton(
                 onClick = { viewModel.toggleRepeatMode() },
-                modifier = Modifier.size(46.dp)
+                modifier = Modifier.size(48.dp)
             ) {
                 Icon(
                     imageVector = Icons.Default.Repeat,
-                    contentDescription = "Repeat",
+                    contentDescription = "Repeat mode: ${repeatMode.name.lowercase().replaceFirstChar { it.uppercase() }}",
                     tint = if (repeatMode != com.audioplayer.hires.model.RepeatMode.OFF) StudioColors.Blue else StudioColors.TextMuted,
                     modifier = Modifier.size(24.dp)
                 )

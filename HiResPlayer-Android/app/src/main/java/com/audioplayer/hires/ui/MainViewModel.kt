@@ -7,6 +7,7 @@ import android.os.Build
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.audioplayer.hires.audio.AudioTrackPlayer
+import com.audioplayer.hires.audio.BiquadType
 import com.audioplayer.hires.audio.CenterChannelProcessor
 import com.audioplayer.hires.audio.StudioDspPipeline
 import com.audioplayer.hires.audio.UsbAudioInspector
@@ -796,6 +797,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun applyGraphicPreset(preset: GraphicEqPreset) = playbackManager.applyGraphicPreset(preset)
 
     fun setVocalFocus(mode: Int, amount: Float) = playbackManager.setVocalFocus(mode, amount)
+
+    val vocalBalance: StateFlow<Float> = playbackManager.vocalBalance
+    val instrumentBalance: StateFlow<Float> = playbackManager.instrumentBalance
+
+    fun setParametricBand(band: Int, enabled: Boolean, type: BiquadType, freq: Float, gainDb: Float, q: Float) =
+        playbackManager.setParametricBand(band, enabled, type, freq, gainDb, q)
+
+    fun setStemBalance(vocalGain: Float, instrumentGain: Float) =
+        playbackManager.setStemBalance(vocalGain, instrumentGain)
+
+    fun resetVocalStudio() = playbackManager.resetVocalStudio()
 
     fun setGaplessEnabled(enabled: Boolean) = playbackManager.setGaplessEnabled(enabled)
 

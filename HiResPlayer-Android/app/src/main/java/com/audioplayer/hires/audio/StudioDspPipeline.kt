@@ -67,6 +67,11 @@ class StudioDspPipeline {
         nativeEngine.setVocalFocus(mode, amount)
     }
 
+    fun setStemBalance(vocalGain: Float, instrumentGain: Float) {
+        centerChannelProcessor.setStemBalance(vocalGain, instrumentGain)
+        nativeEngine.setStemBalance(vocalGain, instrumentGain)
+    }
+
     fun hasClipped(): Boolean {
         return if (nativeEngine.isAvailable) nativeEngine.hasClipped() else preamp.hasClipped()
     }
@@ -122,8 +127,10 @@ class StudioDspPipeline {
         parametricEq.reset()
         centerChannelProcessor.reset()
         centerChannelProcessor.configure(CenterChannelProcessor.MODE_OFF, 0.0f)
+        centerChannelProcessor.setStemBalance(1.0f, 1.0f)
         nativeEngine.setPreampGain(0.0f)
         nativeEngine.setVocalFocus(0, 0.0f)
+        nativeEngine.setStemBalance(1.0f, 1.0f)
         nativeEngine.setDspEnabled(false)
         for (i in 0 until 10) {
             nativeEngine.setGraphicBandGain(i, 0.0f)

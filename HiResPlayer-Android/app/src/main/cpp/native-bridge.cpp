@@ -71,6 +71,14 @@ Java_com_audioplayer_hires_audio_NativeAudioEngine_setVocalFocus(JNIEnv* /*env*/
 }
 
 JNIEXPORT void JNICALL
+Java_com_audioplayer_hires_audio_NativeAudioEngine_setStemBalance(JNIEnv* /*env*/, jobject /*thiz*/, jlong handle, jfloat vocalGain, jfloat instrumentGain) {
+    auto* engine = getEngine(handle);
+    if (engine) {
+        engine->setStemBalance(vocalGain, instrumentGain);
+    }
+}
+
+JNIEXPORT void JNICALL
 Java_com_audioplayer_hires_audio_NativeAudioEngine_setDspEnabled(JNIEnv* /*env*/, jobject /*thiz*/, jlong handle, jboolean enabled) {
     auto* engine = getEngine(handle);
     if (engine) {
@@ -84,10 +92,10 @@ Java_com_audioplayer_hires_audio_NativeAudioEngine_processInterleavedStereo(
     auto* engine = getEngine(handle);
     if (!engine || !buffer || frameCount <= 0) return;
 
-    // Strict bounds check: array must contain at least frameCount * 2 samples
+    // Strict overflow-safe bounds check: array must contain at least frameCount * 2 samples
     jsize arrayLen = env->GetArrayLength(buffer);
-    if (arrayLen < frameCount * 2) {
-        LOGE("processInterleavedStereo buffer underflow: len=%d, required=%d", arrayLen, frameCount * 2);
+    if (frameCount > arrayLen / 2) {
+        LOGE("processInterleavedStereo buffer underflow: len=%d, required=%d frames", arrayLen, frameCount);
         return;
     }
 

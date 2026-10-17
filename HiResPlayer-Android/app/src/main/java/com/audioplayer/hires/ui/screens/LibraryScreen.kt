@@ -38,6 +38,7 @@ import com.audioplayer.hires.model.Track
 import com.audioplayer.hires.ui.MainViewModel
 import com.audioplayer.hires.ui.StudioScreen
 import com.audioplayer.hires.ui.components.EmptyState
+import com.audioplayer.hires.ui.components.TrackArtwork
 import com.audioplayer.hires.ui.theme.*
 
 enum class LibraryCategoryTab(val title: String) {
@@ -415,15 +416,25 @@ fun LibraryScreen(viewModel: MainViewModel) {
                 }
 
                 if (displayTracks.isEmpty()) {
-                    EmptyState(
-                        title = "No songs found in local storage",
-                        message = "LuxNote reads music directly from your phone's storage in real time without importing. Tap Refresh to discover your tracks, or open Diagnostics to check permissions.",
-                        actionLabel = "Refresh Music Library",
-                        onAction = { viewModel.scanDeviceMusic(showIndicator = true) },
-                        secondaryActionLabel = "System & Storage Diagnostics",
-                        onSecondaryAction = { viewModel.setScreen(StudioScreen.DEVICE_INSPECTOR) },
-                        modifier = Modifier.weight(1f)
-                    )
+                    if (searchQuery.isNotBlank()) {
+                        EmptyState(
+                            title = "No songs match \"$searchQuery\"",
+                            message = "Try checking for spelling mistakes or clear your search to browse all library tracks.",
+                            actionLabel = "Clear Search",
+                            onAction = { viewModel.setSearchQuery("") },
+                            modifier = Modifier.weight(1f)
+                        )
+                    } else {
+                        EmptyState(
+                            title = "No music found on this device",
+                            message = "LuxNote reads music directly from your phone's storage in real time without importing. Tap Refresh to discover your tracks, or open Diagnostics to check permissions.",
+                            actionLabel = "Refresh Music Library",
+                            onAction = { viewModel.scanDeviceMusic(showIndicator = true) },
+                            secondaryActionLabel = "System & Storage Diagnostics",
+                            onSecondaryAction = { viewModel.setScreen(StudioScreen.DEVICE_INSPECTOR) },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
                 } else {
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
@@ -853,19 +864,27 @@ fun StudioTrackRowCard(
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             // Album Artwork / Vinyl Thumbnail (Image 4: 48dp with 10dp radius)
-            Box(
+            Surface(
                 modifier = Modifier
                     .size(48.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(StudioColors.SurfaceElevated),
-                contentAlignment = Alignment.Center
+                    .clip(RoundedCornerShape(10.dp)),
+                color = StudioColors.SurfaceElevated
             ) {
-                Icon(
-                    imageVector = if (isPlaying) Icons.Default.PlayArrow else Icons.Default.MusicNote,
-                    contentDescription = null,
-                    tint = if (isCurrent) StudioColors.Gold else StudioColors.TextSecondary,
-                    modifier = Modifier.size(22.dp)
-                )
+                TrackArtwork(
+                    artworkUri = track.artworkUri,
+                    trackUri = track.uriString,
+                    contentDescription = "Artwork for ${track.title}",
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = if (isPlaying) Icons.Default.PlayArrow else Icons.Default.MusicNote,
+                            contentDescription = null,
+                            tint = if (isCurrent) StudioColors.Gold else StudioColors.TextSecondary,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+                }
             }
 
             // Track Title & Subtitle ("Artist Name · FLAC") (Image 4)
@@ -895,16 +914,16 @@ fun StudioTrackRowCard(
                 style = MaterialTheme.typography.bodySmall
             )
 
-            // Play Circle Icon Button (Image 4)
+            // Play Circle Icon Button
             IconButton(
                 onClick = onPlayClick,
-                modifier = Modifier.size(36.dp)
+                modifier = Modifier.size(48.dp)
             ) {
                 Icon(
                     imageVector = if (isPlaying) Icons.Default.PauseCircle else Icons.Default.PlayCircle,
-                    contentDescription = "Play track",
+                    contentDescription = if (isPlaying) "Pause ${track.title}" else "Play ${track.title}",
                     tint = StudioColors.Gold,
-                    modifier = Modifier.size(24.dp)
+                    modifier = Modifier.size(28.dp)
                 )
             }
 
@@ -912,13 +931,13 @@ fun StudioTrackRowCard(
             Box {
                 IconButton(
                     onClick = { showMenu = true },
-                    modifier = Modifier.size(36.dp)
+                    modifier = Modifier.size(48.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.MoreVert,
-                        contentDescription = "Options",
+                        contentDescription = "Options for ${track.title}",
                         tint = StudioColors.TextSecondary,
-                        modifier = Modifier.size(20.dp)
+                        modifier = Modifier.size(22.dp)
                     )
                 }
 

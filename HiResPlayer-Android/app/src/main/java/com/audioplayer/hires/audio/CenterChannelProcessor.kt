@@ -42,11 +42,26 @@ class CenterChannelProcessor {
         recompute()
     }
 
+    private var vocalGain = 1.0f
+    private var instrumentGain = 1.0f
+
+    fun setStemBalance(vocal: Float, instrument: Float) {
+        vocalGain = vocal.coerceIn(0.0f, 2.0f)
+        instrumentGain = instrument.coerceIn(0.0f, 2.0f)
+    }
+
+    fun getVocalGain(): Float = vocalGain
+    fun getInstrumentGain(): Float = instrumentGain
+
     fun getMode(): Int = mode
     fun getAmount(): Float = amount
-    fun isActive(): Boolean = mode != MODE_OFF && amount > 0.001f
+    fun isActive(): Boolean = (mode != MODE_OFF && amount > 0.001f) ||
+            kotlin.math.abs(vocalGain - 1.0f) > 0.001f ||
+            kotlin.math.abs(instrumentGain - 1.0f) > 0.001f
 
     fun reset() {
+        vocalGain = 1.0f
+        instrumentGain = 1.0f
         vocalBoost.reset()
         vocalShelf.reset()
         lpBass.reset()
@@ -54,38 +69,20 @@ class CenterChannelProcessor {
     }
 
     /**
-     * Real-time Stem Mixer: mix center vocal and stereo accompaniment cleanly.
-     */
-    fun processStems(samples: FloatArray, offset: Int, vocalVol: Float, instVol: Float) {
-        val inL = samples[offset]
-        val inR = samples[offset + 1]
-        var mid = 0.5f * (inL + inR)
-        var side = 0.5f * (inL - inR)
-
-        if (vocalVol < 0.999f || vocalVol > 1.001f) {
-            val vocDiff = vocalVol - 1.0f
-            val midGain = 1.0f + vocDiff * 0.7f
-            mid *= max(0.0f, midGain)
-        }
-
-        side *= instVol
-
-        samples[offset] = mid + side
-        samples[offset + 1] = mid - side
-    }
-
-    /**
      * Process a single stereo frame in place with zero comb filtering or phase hash.
      */
     fun processFrame(samples: FloatArray, offset: Int) {
-        if (mode == MODE_OFF || amount <= 0.001f) return
+        val hasVocalEffect = mode != MODE_OFF && amount > 0.001f
+        val hasStemBalance = kotlin.math.abs(vocalGain - 1.0f) > 0.001f || kotlin.math.abs(instrumentGain - 1.0f) > 0.001f
+
+        if (!hasVocalEffect && !hasStemBalance) return
 
         val inL = samples[offset]
         val inR = samples[offset + 1]
-        val mid = 0.5f * (inL + inR)
-        var side = 0.5f * (inL - inR)
+        val mid = 0.5f * (inL + inR) * vocalGain
+        var side = 0.5f * (inL - inR) * instrumentGain
 
-        if (mode == MODE_VOCAL_FOCUS) {
+        if (mode == MODE_VOCAL_FOCUS && amount > 0.001f) {
             // Mode 1: Vocal Focus (Formant boost + high-shelf air, zero allocation)
             val midBoosted = vocalBoost.processMonoSample(mid.toDouble())
             val midShelved = vocalShelf.processMonoSample(midBoosted)
@@ -96,7 +93,7 @@ class CenterChannelProcessor {
 
             samples[offset] = midOut + side
             samples[offset + 1] = midOut - side
-        } else if (mode == MODE_INSTRUMENTAL_FOCUS) {
+        } else if (mode == MODE_INSTRUMENTAL_FOCUS && amount > 0.001f) {
             // Mode 2: Instrumental Focus (Decompose mid channel without array allocations)
             val subBass = lpBass.processMonoSample(mid.toDouble()).toFloat()
             val air = hpAir.processMonoSample(mid.toDouble()).toFloat()
@@ -113,6 +110,9 @@ class CenterChannelProcessor {
 
             samples[offset] = midOut + side
             samples[offset + 1] = midOut - side
+        } else {
+            samples[offset] = mid + side
+            samples[offset + 1] = mid - side
         }
     }
 

@@ -13,8 +13,8 @@ android {
         applicationId = "com.audioplayer.hires"
         minSdk = 24
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 4
+        versionName = "3.2.0"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")
@@ -24,6 +24,21 @@ android {
             cmake {
                 cppFlags += "-std=c++20"
                 arguments += "-DANDROID_STL=c++_shared"
+            }
+        }
+    }
+
+    signingConfigs {
+        create("release") {
+            val keystorePath = System.getenv("KEYSTORE_PATH") ?: project.findProperty("KEYSTORE_PATH") as? String
+            if (keystorePath != null && file(keystorePath).exists()) {
+                storeFile = file(keystorePath)
+                storePassword = System.getenv("KEYSTORE_PASSWORD") ?: project.findProperty("KEYSTORE_PASSWORD") as? String ?: ""
+                keyAlias = System.getenv("KEY_ALIAS") ?: project.findProperty("KEY_ALIAS") as? String ?: ""
+                keyPassword = System.getenv("KEY_PASSWORD") ?: project.findProperty("KEY_PASSWORD") as? String ?: ""
+            } else {
+                // Portable fallback: use debug keystore when release key is not provisioned
+                initWith(getByName("debug"))
             }
         }
     }
@@ -39,7 +54,7 @@ android {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("release")
         }
     }
     compileOptions {

@@ -10,14 +10,34 @@ import java.nio.ByteBuffer
  */
 object PcmFormatConverter {
 
-    fun getBytesPerSample(encoding: Int): Int {
+    /**
+     * Resolves effective PCM encoding.
+     * When encoding is 0, AudioFormat.ENCODING_INVALID, or AudioFormat.ENCODING_DEFAULT,
+     * it safely defaults to AudioFormat.ENCODING_PCM_16BIT per Android MediaCodec specification
+     * ("If KEY_PCM_ENCODING is not present, default to ENCODING_PCM_16BIT").
+     * Explicit unsupported encodings throw IllegalArgumentException.
+     */
+    fun resolveEffectiveEncoding(encoding: Int): Int {
         return when (encoding) {
+            0, AudioFormat.ENCODING_INVALID, AudioFormat.ENCODING_DEFAULT -> AudioFormat.ENCODING_PCM_16BIT
+            AudioFormat.ENCODING_PCM_16BIT,
+            AudioFormat.ENCODING_PCM_FLOAT,
+            21, // AudioFormat.ENCODING_PCM_24BIT_PACKED
+            22, // AudioFormat.ENCODING_PCM_32BIT
+            AudioFormat.ENCODING_PCM_8BIT -> encoding
+            else -> throw IllegalArgumentException("Unsupported explicit PCM encoding: $encoding")
+        }
+    }
+
+    fun getBytesPerSample(encoding: Int): Int {
+        val effective = resolveEffectiveEncoding(encoding)
+        return when (effective) {
             AudioFormat.ENCODING_PCM_16BIT -> 2
             AudioFormat.ENCODING_PCM_FLOAT -> 4
             21 -> 3 // AudioFormat.ENCODING_PCM_24BIT_PACKED
             22 -> 4 // AudioFormat.ENCODING_PCM_32BIT
             AudioFormat.ENCODING_PCM_8BIT -> 1
-            else -> 2 // Default standard 16-bit
+            else -> 2
         }
     }
 
@@ -31,8 +51,15 @@ object PcmFormatConverter {
         channelCount: Int,
         targetFloatBuffer: FloatArray
     ): Int {
+        val effectiveEncoding = try {
+            resolveEffectiveEncoding(encoding)
+        } catch (e: IllegalArgumentException) {
+            android.util.Log.e("PcmFormatConverter", "Failed converting buffer: ${e.message}")
+            return 0
+        }
+
         val channels = channelCount.coerceAtLeast(1)
-        val bytesPerSample = getBytesPerSample(encoding)
+        val bytesPerSample = getBytesPerSample(effectiveEncoding)
         val frameSizeBytes = bytesPerSample * channels
         val remainingBytes = byteBuffer.remaining()
         val frames = remainingBytes / frameSizeBytes
@@ -41,7 +68,7 @@ object PcmFormatConverter {
         val requiredFloats = frames * 2
         if (targetFloatBuffer.size < requiredFloats) return 0
 
-        when (encoding) {
+        when (effectiveEncoding) {
             AudioFormat.ENCODING_PCM_FLOAT -> {
                 decodeFloat(byteBuffer, channels, frames, targetFloatBuffer)
             }
@@ -54,9 +81,10 @@ object PcmFormatConverter {
             AudioFormat.ENCODING_PCM_8BIT -> {
                 decode8Bit(byteBuffer, channels, frames, targetFloatBuffer)
             }
-            else -> { // Default: 16-bit PCM
+            AudioFormat.ENCODING_PCM_16BIT -> {
                 decode16Bit(byteBuffer, channels, frames, targetFloatBuffer)
             }
+            else -> return 0
         }
 
         return frames

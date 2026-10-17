@@ -72,10 +72,17 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     containerColor = StudioColors.Background,
                     bottomBar = {
-                        // Only show bottom bar & mini-player when not on full Now Playing screen
-                        if (currentScreen != StudioScreen.NOW_PLAYING) {
+                        // Only show bottom navigation bar and mini player on main top-level tabs
+                        val isDetailScreen = currentScreen in listOf(
+                            StudioScreen.NOW_PLAYING,
+                            StudioScreen.EQUALIZER,
+                            StudioScreen.VOCAL_STUDIO,
+                            StudioScreen.DEVICE_INSPECTOR
+                        )
+
+                        if (!isDetailScreen) {
                             Column(modifier = Modifier.navigationBarsPadding()) {
-                                // Docked Persistent Mini Player (visible across all tabs whenever audio is active)
+                                // Docked Persistent Mini Player (visible across all top-level tabs)
                                 StudioMiniPlayer(viewModel)
 
                                 NavigationBar(
@@ -86,8 +93,8 @@ class MainActivity : ComponentActivity() {
                                     NavigationBarItem(
                                         selected = currentScreen == StudioScreen.LIBRARY,
                                         onClick = { viewModel.setScreen(StudioScreen.LIBRARY) },
-                                        icon = { Icon(Icons.Default.MusicNote, contentDescription = "Library") },
-                                        label = { Text("Library", fontSize = 11.sp) },
+                                        icon = { Icon(Icons.Default.MusicNote, contentDescription = "Music Library") },
+                                        label = { Text("Library", fontSize = 12.sp) },
                                         colors = NavigationBarItemDefaults.colors(
                                             selectedIconColor = StudioColors.Gold,
                                             selectedTextColor = StudioColors.Gold,
@@ -101,8 +108,8 @@ class MainActivity : ComponentActivity() {
                                     NavigationBarItem(
                                         selected = currentScreen == StudioScreen.QUEUES,
                                         onClick = { viewModel.setScreen(StudioScreen.QUEUES) },
-                                        icon = { Icon(Icons.AutoMirrored.Filled.QueueMusic, contentDescription = "Queues") },
-                                        label = { Text("Queues", fontSize = 11.sp) },
+                                        icon = { Icon(Icons.AutoMirrored.Filled.QueueMusic, contentDescription = "Playback Queues") },
+                                        label = { Text("Queues", fontSize = 12.sp) },
                                         colors = NavigationBarItemDefaults.colors(
                                             selectedIconColor = StudioColors.Gold,
                                             selectedTextColor = StudioColors.Gold,
@@ -116,8 +123,8 @@ class MainActivity : ComponentActivity() {
                                     NavigationBarItem(
                                         selected = currentScreen == StudioScreen.FAVORITES,
                                         onClick = { viewModel.setScreen(StudioScreen.FAVORITES) },
-                                        icon = { Icon(Icons.Default.Favorite, contentDescription = "Favorites") },
-                                        label = { Text("Favorites", fontSize = 11.sp) },
+                                        icon = { Icon(Icons.Default.Favorite, contentDescription = "Favorite Tracks") },
+                                        label = { Text("Favorites", fontSize = 12.sp) },
                                         colors = NavigationBarItemDefaults.colors(
                                             selectedIconColor = StudioColors.Gold,
                                             selectedTextColor = StudioColors.Gold,
@@ -129,13 +136,10 @@ class MainActivity : ComponentActivity() {
 
                                     // 4. Settings Tab
                                     NavigationBarItem(
-                                        selected = currentScreen == StudioScreen.SETTINGS ||
-                                                   currentScreen == StudioScreen.EQUALIZER ||
-                                                   currentScreen == StudioScreen.VOCAL_STUDIO ||
-                                                   currentScreen == StudioScreen.DEVICE_INSPECTOR,
+                                        selected = currentScreen == StudioScreen.SETTINGS,
                                         onClick = { viewModel.setScreen(StudioScreen.SETTINGS) },
-                                        icon = { Icon(Icons.Default.Tune, contentDescription = "Settings") },
-                                        label = { Text("Settings", fontSize = 11.sp) },
+                                        icon = { Icon(Icons.Default.Tune, contentDescription = "Settings and Preferences") },
+                                        label = { Text("Settings", fontSize = 12.sp) },
                                         colors = NavigationBarItemDefaults.colors(
                                             selectedIconColor = StudioColors.Gold,
                                             selectedTextColor = StudioColors.Gold,

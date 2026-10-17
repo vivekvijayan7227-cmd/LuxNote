@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.SharedPreferences
 import android.os.Build
 import com.audioplayer.hires.audio.AudioTrackPlayer
+import com.audioplayer.hires.audio.BiquadType
 import com.audioplayer.hires.audio.CenterChannelProcessor
 import com.audioplayer.hires.audio.StudioDspPipeline
 import com.audioplayer.hires.model.GraphicEqPreset
@@ -106,6 +107,12 @@ class PlaybackManager private constructor(private val context: Context) {
     private val _vocalFocusAmount = MutableStateFlow(0.0f)
     val vocalFocusAmount: StateFlow<Float> = _vocalFocusAmount.asStateFlow()
 
+    private val _vocalBalance = MutableStateFlow(1.0f)
+    val vocalBalance: StateFlow<Float> = _vocalBalance.asStateFlow()
+
+    private val _instrumentBalance = MutableStateFlow(1.0f)
+    val instrumentBalance: StateFlow<Float> = _instrumentBalance.asStateFlow()
+
     init {
         audioPlayer.onStatusChanged = { status ->
             _playerStatus.value = status
@@ -115,13 +122,48 @@ class PlaybackManager private constructor(private val context: Context) {
 
         audioPlayer.onPositionChanged = { pos ->
             _positionMs.value = pos
+            if (_isGaplessEnabled.value) {
+                checkGaplessPrebuffer(pos)
+            }
         }
 
         audioPlayer.onTrackCompleted = {
+            prebufferedTrackId = null
             handleTrackCompleted()
         }
 
         updateBitPerfectStatus()
+    }
+
+    private var prebufferedTrackId: Long? = null
+
+    private fun checkGaplessPrebuffer(pos: Long) {
+        val cur = _currentTrack.value ?: return
+        if (cur.durationMs <= 0L) return
+        val remaining = cur.durationMs - pos
+        if (remaining in 1..3500L && prebufferedTrackId != cur.id) {
+            prebufferedTrackId = cur.id
+            val nextTrack = getNextTrackCandidate()
+            if (nextTrack != null) {
+                audioPlayer.prepareNextTrack(nextTrack)
+            }
+        }
+    }
+
+    fun getNextTrackCandidate(): Track? {
+        val q = _activeQueue.value
+        if (q.isEmpty()) return null
+        return when (_repeatMode.value) {
+            RepeatMode.ONE -> _currentTrack.value
+            RepeatMode.ALL -> {
+                val nextIdx = (_currentQueueIndex.value + 1) % q.size
+                q.getOrNull(nextIdx)
+            }
+            RepeatMode.OFF -> {
+                val nextIdx = _currentQueueIndex.value + 1
+                if (nextIdx < q.size) q[nextIdx] else null
+            }
+        }
     }
 
     fun setGaplessEnabled(enabled: Boolean) {
@@ -314,6 +356,14 @@ class PlaybackManager private constructor(private val context: Context) {
         updateBitPerfectStatus()
     }
 
+    fun setParametricBand(band: Int, enabled: Boolean, type: BiquadType, freq: Float, gainDb: Float, q: Float) {
+        dspPipeline.setParametricBand(band, enabled, type, freq, gainDb, q)
+        if (enabled && !_dspEnabled.value) {
+            toggleDspEnabled(true)
+        }
+        updateBitPerfectStatus()
+    }
+
     fun setVocalFocus(mode: Int, amount: Float) {
         dspPipeline.setVocalFocus(mode, amount)
         _vocalFocusMode.value = mode
@@ -322,6 +372,21 @@ class PlaybackManager private constructor(private val context: Context) {
             toggleDspEnabled(true)
         }
         updateBitPerfectStatus()
+    }
+
+    fun setStemBalance(vocalGain: Float, instrumentGain: Float) {
+        _vocalBalance.value = vocalGain.coerceIn(0.0f, 2.0f)
+        _instrumentBalance.value = instrumentGain.coerceIn(0.0f, 2.0f)
+        dspPipeline.setStemBalance(_vocalBalance.value, _instrumentBalance.value)
+        if ((_vocalBalance.value != 1.0f || _instrumentBalance.value != 1.0f) && !_dspEnabled.value) {
+            toggleDspEnabled(true)
+        }
+        updateBitPerfectStatus()
+    }
+
+    fun resetVocalStudio() {
+        setVocalFocus(CenterChannelProcessor.MODE_OFF, 0.0f)
+        setStemBalance(1.0f, 1.0f)
     }
 
     fun resetClipping() {
@@ -335,14 +400,11 @@ class PlaybackManager private constructor(private val context: Context) {
 
     fun updateBitPerfectStatus() {
         val dspActive = dspPipeline.dspEnabled
-        val isSinkBitPerfectCapable = audioPlayer.isBitPerfectCapable && !audioPlayer.isUsingFallback
-        val isBypass = !dspActive
-
-        _isBitPerfect.value = isBypass && isSinkBitPerfectCapable
+        // Reserve bit-perfect strictly for demonstrated end-to-end verified paths
+        _isBitPerfect.value = false
 
         _signalPathDescription.value = when {
-            dspActive -> "DSP: Active (Studio Filter Cascade)"
-            isSinkBitPerfectCapable -> "Bit-Perfect Direct"
+            dspActive -> "DSP: Active"
             else -> "DSP: Bypassed"
         }
     }

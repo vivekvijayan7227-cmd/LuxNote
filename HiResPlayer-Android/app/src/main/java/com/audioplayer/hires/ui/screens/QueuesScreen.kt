@@ -41,6 +41,7 @@ fun QueuesScreen(viewModel: MainViewModel) {
     var newQueueName by remember { mutableStateOf("") }
     var queueToRename by remember { mutableStateOf<StudioQueue?>(null) }
     var renameText by remember { mutableStateOf("") }
+    var queueToClear by remember { mutableStateOf<StudioQueue?>(null) }
 
     val trackMap = remember(libraryTracks) { libraryTracks.associateBy { it.id } }
 
@@ -171,16 +172,22 @@ fun QueuesScreen(viewModel: MainViewModel) {
                                         queueToRename = q
                                         renameText = q.name
                                     },
-                                    modifier = Modifier.size(32.dp)
+                                    modifier = Modifier.size(48.dp)
                                 ) {
-                                    Icon(Icons.Default.Edit, contentDescription = "Rename", tint = StudioTextMuted, modifier = Modifier.size(16.dp))
+                                    Icon(Icons.Default.Edit, contentDescription = "Rename queue ${q.name}", tint = StudioTextMuted, modifier = Modifier.size(20.dp))
                                 }
 
                                 IconButton(
-                                    onClick = { viewModel.clearQueue(q.id) },
-                                    modifier = Modifier.size(32.dp)
+                                    onClick = {
+                                        if (queueTracks.isNotEmpty()) {
+                                            queueToClear = q
+                                        } else {
+                                            viewModel.clearQueue(q.id)
+                                        }
+                                    },
+                                    modifier = Modifier.size(48.dp)
                                 ) {
-                                    Icon(Icons.Default.DeleteOutline, contentDescription = "Clear", tint = StudioTextMuted, modifier = Modifier.size(16.dp))
+                                    Icon(Icons.Default.DeleteOutline, contentDescription = "Clear queue ${q.name}", tint = StudioTextMuted, modifier = Modifier.size(20.dp))
                                 }
                             }
                         }
@@ -193,13 +200,13 @@ fun QueuesScreen(viewModel: MainViewModel) {
                             Text(
                                 text = "${queueTracks.size} Tracks • Track ${(q.currentIndex + 1).coerceAtMost(queueTracks.size.coerceAtLeast(1))} of ${queueTracks.size}",
                                 color = StudioTextMuted,
-                                fontSize = 11.sp
+                                fontSize = 13.sp
                             )
                             if (q.positionMs > 0) {
                                 Text(
                                     text = "Saved pos: ${formatTime(q.positionMs)}",
                                     color = StudioGold,
-                                    fontSize = 11.sp
+                                    fontSize = 13.sp
                                 )
                             }
                         }
@@ -302,6 +309,35 @@ fun QueuesScreen(viewModel: MainViewModel) {
             },
             dismissButton = {
                 TextButton(onClick = { queueToRename = null }) {
+                    Text("Cancel", color = StudioTextMuted)
+                }
+            },
+            containerColor = StudioCardBg
+        )
+    }
+
+    // Modal: Confirmation Dialog for Clear Queue
+    if (queueToClear != null) {
+        AlertDialog(
+            onDismissRequest = { queueToClear = null },
+            title = { Text("CLEAR QUEUE", color = StudioGold, fontSize = 15.sp, fontWeight = FontWeight.Bold) },
+            text = {
+                Text(
+                    text = "Are you sure you want to clear all tracks from '${queueToClear!!.name}'?",
+                    color = StudioTextPrimary,
+                    fontSize = 14.sp
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.clearQueue(queueToClear!!.id)
+                    queueToClear = null
+                }) {
+                    Text("Clear", color = StudioPeakCrimson, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { queueToClear = null }) {
                     Text("Cancel", color = StudioTextMuted)
                 }
             },

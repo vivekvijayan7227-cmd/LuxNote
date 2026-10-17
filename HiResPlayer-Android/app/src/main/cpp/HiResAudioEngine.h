@@ -63,6 +63,8 @@ struct DspSnapshot {
     
     int vocalMode = 0; // 0=off, 1=vocal focus, 2=instrumental focus
     float vocalAmount = 0.0f;
+    float vocalGain = 1.0f;
+    float instrumentGain = 1.0f;
     BiquadCoeffs vocalBoostCoeffs;
     BiquadCoeffs vocalShelfCoeffs;
     BiquadCoeffs lpBassCoeffs;
@@ -79,6 +81,7 @@ public:
     void setParametricBand(int band, bool enabled, int type, float freq, float gainDb, float q);
     void setPreampGain(float gainDb);
     void setVocalFocus(int mode, float amount);
+    void setStemBalance(float vocalGain, float instrumentGain);
     void setDspEnabled(bool enabled);
 
     void processInterleavedStereo(float* buffer, int frameCount);
@@ -111,9 +114,12 @@ private:
     std::mutex m_stageMutex;
     DspSnapshot m_staging;
     
-    // Double buffered snapshot for lock-free audio thread reads
-    DspSnapshot m_snapshots[2];
-    std::atomic<int> m_activeSnapshotIndex{0};
+    // Lock-free reader-aware triple buffer for audio thread parameter updates
+    DspSnapshot m_snapshots[3];
+    int m_writeIdx = 2;
+    int m_readIdx = 1;
+    std::atomic<int> m_sharedIdx{0};
+    std::atomic<bool> m_hasNewSnapshot{false};
 
     // Audio thread filter states (only accessed on audio thread)
     BiquadState m_graphicStates[NUM_GRAPHIC_BANDS];

@@ -3,13 +3,17 @@ package com.audioplayer.hires.ui.screens
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -22,18 +26,18 @@ import com.audioplayer.hires.ui.theme.*
 fun VocalStudioScreen(viewModel: MainViewModel) {
     val currentMode by viewModel.vocalFocusMode.collectAsState()
     val currentAmount by viewModel.vocalFocusAmount.collectAsState()
-
-    var vocalVol by remember { mutableStateOf(1.0f) }
-    var instVol by remember { mutableStateOf(1.0f) }
+    val vocalVol by viewModel.vocalBalance.collectAsState()
+    val instVol by viewModel.instrumentBalance.collectAsState()
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(StudioObsidian)
-            .statusBarsPadding() // FIX: Clean spacing below Android system status bar
+            .statusBarsPadding()
             .padding(horizontal = 16.dp, vertical = 8.dp)
+            .verticalScroll(rememberScrollState())
     ) {
-        // Top Bar with Prominent Back Navigation
+        // Top Bar with Prominent Back Navigation & Reset
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -43,41 +47,47 @@ fun VocalStudioScreen(viewModel: MainViewModel) {
         ) {
             IconButton(
                 onClick = { viewModel.navigateBack() },
-                modifier = Modifier.size(40.dp)
+                modifier = Modifier.size(48.dp)
             ) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "Back",
+                    contentDescription = "Back to previous screen",
                     tint = StudioAiCyan
                 )
             }
 
             Text(
-                text = "VOCAL & INSTRUMENTAL STUDIO",
+                text = "VOCAL STUDIO",
                 color = StudioTextPrimary,
-                fontSize = 14.sp,
+                fontSize = 16.sp,
                 fontWeight = FontWeight.Bold,
                 letterSpacing = 1.sp
             )
 
-            Text(
-                text = "100% NON-AI DSP",
-                color = StudioVuGreen,
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Bold
-            )
+            TextButton(
+                onClick = { viewModel.resetVocalStudio() }
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Refresh,
+                    contentDescription = "Reset Vocal Studio",
+                    tint = StudioGold,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text("Reset", color = StudioGold, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            }
         }
 
         Spacer(modifier = Modifier.height(10.dp))
 
         // Mode Selector Buttons
         Text(
-            text = "Select Processing Mode",
+            text = "Processing Mode",
             color = StudioTextMuted,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Medium
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold
         )
-        Spacer(modifier = Modifier.height(6.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -103,7 +113,7 @@ fun VocalStudioScreen(viewModel: MainViewModel) {
 
             ModeSelectButton(
                 title = "Instrumental Focus",
-                subtitle = "Center Attenuation",
+                subtitle = "Lead Vocal Cut",
                 isSelected = currentMode == CenterChannelProcessor.MODE_INSTRUMENTAL_FOCUS,
                 modifier = Modifier.weight(1f)
             ) {
@@ -127,9 +137,9 @@ fun VocalStudioScreen(viewModel: MainViewModel) {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "Processing Intensity",
+                        text = "Focus Intensity",
                         color = StudioTextPrimary,
-                        fontSize = 13.sp,
+                        fontSize = 14.sp,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
@@ -155,22 +165,22 @@ fun VocalStudioScreen(viewModel: MainViewModel) {
                 Text(
                     text = when (currentMode) {
                         CenterChannelProcessor.MODE_VOCAL_FOCUS ->
-                            "Boosting 2.6 kHz vocal formant body (+${String.format("%.1f", currentAmount * 6f)} dB) and cleaning up low-end mud."
+                            "Enhancing 2.6 kHz lead vocal formants while preserving stereo warmth."
                         CenterChannelProcessor.MODE_INSTRUMENTAL_FOCUS ->
-                            "Surgically attenuating center vocalist (-${String.format("%.1f", currentAmount * 24f)} dB) while 100% preserving sub-bass (<140 Hz) and high-air stereo sheen."
+                            "Attenuating center vocalists while preserving sub-bass (<140 Hz) and stereo ambience."
                         else ->
-                            "Pure bit-exact original signal path. Zero filter interaction."
+                            "Original stereo mix without mid/side processing."
                     },
                     color = StudioTextMuted,
-                    fontSize = 11.sp,
-                    lineHeight = 15.sp
+                    fontSize = 13.sp,
+                    lineHeight = 18.sp
                 )
             }
         }
 
         Spacer(modifier = Modifier.height(14.dp))
 
-        // Stem Balance Faders
+        // Live Stem Balance Faders (Fully connected to live audio pipeline)
         Surface(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(10.dp),
@@ -179,74 +189,88 @@ fun VocalStudioScreen(viewModel: MainViewModel) {
         ) {
             Column(modifier = Modifier.padding(14.dp)) {
                 Text(
-                    text = "Mid / Side Stem Balance",
+                    text = "Live Mid / Side Balance",
                     color = StudioTextPrimary,
-                    fontSize = 13.sp,
+                    fontSize = 14.sp,
                     fontWeight = FontWeight.Bold
                 )
 
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(10.dp))
 
+                // Vocal (Mid Channel) Fader
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Vocal (Mid):", color = StudioTextMuted, fontSize = 11.sp, modifier = Modifier.width(90.dp))
+                    Text("Vocal (Mid):", color = StudioTextMuted, fontSize = 13.sp, modifier = Modifier.width(110.dp))
                     Slider(
                         value = vocalVol,
                         onValueChange = {
-                            vocalVol = it
-                            viewModel.dspPipeline.centerChannelProcessor.processStems(floatArrayOf(0f, 0f), 0, vocalVol, instVol)
+                            viewModel.setStemBalance(it, instVol)
                         },
                         valueRange = 0.0f..2.0f,
                         colors = SliderDefaults.colors(thumbColor = StudioVuGreen, activeTrackColor = StudioVuGreen),
                         modifier = Modifier.weight(1f)
                     )
-                    Text(String.format("%.1fx", vocalVol), color = StudioVuGreen, fontSize = 11.sp, modifier = Modifier.width(35.dp))
+                    Text(
+                        text = String.format("%.1fx", vocalVol),
+                        color = StudioVuGreen,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.width(45.dp)
+                    )
                 }
 
+                Spacer(modifier = Modifier.height(6.dp))
+
+                // Accompaniment (Side Channel) Fader
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Instruments (Side):", color = StudioTextMuted, fontSize = 11.sp, modifier = Modifier.width(90.dp))
+                    Text("Instruments (Side):", color = StudioTextMuted, fontSize = 13.sp, modifier = Modifier.width(110.dp))
                     Slider(
                         value = instVol,
                         onValueChange = {
-                            instVol = it
-                            viewModel.dspPipeline.centerChannelProcessor.processStems(floatArrayOf(0f, 0f), 0, vocalVol, instVol)
+                            viewModel.setStemBalance(vocalVol, it)
                         },
                         valueRange = 0.0f..2.0f,
                         colors = SliderDefaults.colors(thumbColor = StudioGold, activeTrackColor = StudioGold),
                         modifier = Modifier.weight(1f)
                     )
-                    Text(String.format("%.1fx", instVol), color = StudioGold, fontSize = 11.sp, modifier = Modifier.width(35.dp))
+                    Text(
+                        text = String.format("%.1fx", instVol),
+                        color = StudioGold,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.width(45.dp)
+                    )
                 }
             }
         }
 
         Spacer(modifier = Modifier.height(14.dp))
 
-        // Audiophile Engineering Truth Disclosure Box
+        // Signal Processing Information Card
         Surface(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(8.dp),
             color = Color(0xFF111722),
             border = androidx.compose.foundation.BorderStroke(1.dp, StudioBorder.copy(alpha = 0.6f))
         ) {
-            Column(modifier = Modifier.padding(10.dp)) {
+            Column(modifier = Modifier.padding(12.dp)) {
                 Text(
-                    text = "Acoustic Engineering Disclosure (100% Non-AI)",
+                    text = "Deterministic Mid/Side Acoustic Processing",
                     color = StudioGold,
-                    fontSize = 10.sp,
+                    fontSize = 12.sp,
                     fontWeight = FontWeight.Bold
                 )
-                Spacer(modifier = Modifier.height(3.dp))
+                Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "This processor utilizes phase-coherent Mid/Side matrixing and Linkwitz-Riley crossover filtering. Unlike neural models that introduce latency and phase artifacts, this offline DSP is 100% deterministic with ZERO comb-filtering or watery IEM noise.",
+                    text = "Processes center lead components and wide stereo accompaniment in real time using minimum-phase biquad filters without introducing network latency or phasing artifacts.",
                     color = StudioTextMuted,
-                    fontSize = 10.sp,
-                    lineHeight = 14.sp
+                    fontSize = 12.sp,
+                    lineHeight = 16.sp
                 )
             }
         }
@@ -268,7 +292,7 @@ fun ModeSelectButton(
             contentColor = if (isSelected) StudioObsidian else StudioTextPrimary
         ),
         shape = RoundedCornerShape(8.dp),
-        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
         border = androidx.compose.foundation.BorderStroke(
             1.dp,
             if (isSelected) StudioAiCyan else StudioBorder
@@ -276,11 +300,12 @@ fun ModeSelectButton(
         modifier = modifier
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(text = title, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            Text(text = title, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            Spacer(modifier = Modifier.height(2.dp))
             Text(
                 text = subtitle,
-                fontSize = 9.sp,
-                color = if (isSelected) StudioObsidian.copy(alpha = 0.8f) else StudioTextMuted
+                fontSize = 11.sp,
+                color = if (isSelected) StudioObsidian.copy(alpha = 0.85f) else StudioTextMuted
             )
         }
     }

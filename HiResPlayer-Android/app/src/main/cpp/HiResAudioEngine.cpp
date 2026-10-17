@@ -18,6 +18,9 @@ HiResAudioEngine::HiResAudioEngine() {
     }
 
     setSampleRate(44100.0f);
+    for (int i = 0; i < 3; ++i) {
+        m_snapshots[i] = m_staging;
+    }
 }
 
 void HiResAudioEngine::setSampleRate(float sampleRate) {
@@ -65,6 +68,13 @@ void HiResAudioEngine::setVocalFocus(int mode, float amount) {
     m_staging.vocalMode = mode;
     m_staging.vocalAmount = std::clamp(amount, 0.0f, 1.0f);
     recomputeVocal(m_staging);
+    commitSnapshot();
+}
+
+void HiResAudioEngine::setStemBalance(float vocalGain, float instrumentGain) {
+    std::lock_guard<std::mutex> lock(m_stageMutex);
+    m_staging.vocalGain = std::clamp(vocalGain, 0.0f, 2.0f);
+    m_staging.instrumentGain = std::clamp(instrumentGain, 0.0f, 2.0f);
     commitSnapshot();
 }
 
@@ -213,10 +223,9 @@ void HiResAudioEngine::recomputeVocal(DspSnapshot& snap) {
 }
 
 void HiResAudioEngine::commitSnapshot() {
-    int cur = m_activeSnapshotIndex.load(std::memory_order_relaxed);
-    int next = 1 - cur;
-    m_snapshots[next] = m_staging;
-    m_activeSnapshotIndex.store(next, std::memory_order_release);
+    m_snapshots[m_writeIdx] = m_staging;
+    m_writeIdx = m_sharedIdx.exchange(m_writeIdx, std::memory_order_acq_rel);
+    m_hasNewSnapshot.store(true, std::memory_order_release);
 }
 
 void HiResAudioEngine::processInterleavedStereo(float* buffer, int frameCount) {
@@ -227,9 +236,12 @@ void HiResAudioEngine::processInterleavedStereo(float* buffer, int frameCount) {
     bool clipped = false;
     bool dsp = m_dspEnabled.load(std::memory_order_relaxed);
 
-    // Lock-free atomic acquisition of active DSP parameter snapshot
-    int snapIdx = m_activeSnapshotIndex.load(std::memory_order_acquire);
-    const auto& snap = m_snapshots[snapIdx];
+    // Lock-free acquisition of newest DSP parameter snapshot via triple-buffering
+    if (m_hasNewSnapshot.load(std::memory_order_acquire)) {
+        m_readIdx = m_sharedIdx.exchange(m_readIdx, std::memory_order_acq_rel);
+        m_hasNewSnapshot.store(false, std::memory_order_release);
+    }
+    const auto& snap = m_snapshots[m_readIdx];
 
     int sampleCount = frameCount * 2;
     for (int i = 0; i < sampleCount; i += 2) {
@@ -278,12 +290,15 @@ void HiResAudioEngine::processInterleavedStereo(float* buffer, int frameCount) {
                 }
             }
 
-            // 4. Mid/Side Center Channel Vocal & Instrumental Separation
-            if (snap.vocalMode != 0 && snap.vocalAmount > 0.001f) {
-                float mid = 0.5f * (inL + inR);
-                float side = 0.5f * (inL - inR);
+            // 4. Mid/Side Center Channel Vocal & Instrumental Separation & Stem Balance
+            bool hasVocalEffect = (snap.vocalMode != 0 && snap.vocalAmount > 0.001f);
+            bool hasStemBalance = (std::abs(snap.vocalGain - 1.0f) > 0.001f || std::abs(snap.instrumentGain - 1.0f) > 0.001f);
 
-                if (snap.vocalMode == 1) { // Vocal Focus
+            if (hasVocalEffect || hasStemBalance) {
+                float mid = 0.5f * (inL + inR) * snap.vocalGain;
+                float side = 0.5f * (inL - inR) * snap.instrumentGain;
+
+                if (snap.vocalMode == 1 && snap.vocalAmount > 0.001f) { // Vocal Focus
                     const auto& cb = snap.vocalBoostCoeffs;
                     auto& sb = m_vocalBoostState;
                     float midBoost = cb.b0 * mid + sb.z1_l;
@@ -302,7 +317,7 @@ void HiResAudioEngine::processInterleavedStereo(float* buffer, int frameCount) {
 
                     inL = midOut + side;
                     inR = midOut - side;
-                } else if (snap.vocalMode == 2) { // Instrumental Focus
+                } else if (snap.vocalMode == 2 && snap.vocalAmount > 0.001f) { // Instrumental Focus
                     const auto& clp = snap.lpBassCoeffs;
                     auto& slp = m_lpBassState;
                     float subBass = clp.b0 * mid + slp.z1_l;
@@ -321,6 +336,9 @@ void HiResAudioEngine::processInterleavedStereo(float* buffer, int frameCount) {
 
                     inL = midOut + side;
                     inR = midOut - side;
+                } else {
+                    inL = mid + side;
+                    inR = mid - side;
                 }
             }
 

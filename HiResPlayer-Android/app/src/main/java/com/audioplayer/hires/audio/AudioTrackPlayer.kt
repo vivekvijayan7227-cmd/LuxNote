@@ -259,6 +259,25 @@ class AudioTrackPlayer(
         return DataSourceHandle(null, 0L, 0L, if (path.isNotBlank()) path else uriStr, null)
     }
 
+    @Volatile private var prebufferedTrack: Track? = null
+    @Volatile private var prebufferedHandle: DataSourceHandle? = null
+
+    /**
+     * Prime next track data source ahead of time for true gapless playback.
+     */
+    fun prepareNextTrack(nextTrack: Track) {
+        scope.launch(Dispatchers.IO) {
+            try {
+                prebufferedHandle?.close()
+                prebufferedTrack = nextTrack
+                prebufferedHandle = openDataSource(nextTrack.uriString)
+                Log.d(tag, "Gapless: Pre-buffered next track data source: ${nextTrack.title}")
+            } catch (e: Exception) {
+                Log.w(tag, "Gapless: Failed to pre-buffer next track", e)
+            }
+        }
+    }
+
     /**
      * Start playing an audio track with serialized session ownership.
      */
@@ -789,6 +808,18 @@ class AudioTrackPlayer(
     }
 
     private fun createAudioTrack(sr: Int) {
+        val existing = audioTrack
+        if (existing != null && sampleRate == sr && existing.state == AudioTrack.STATE_INITIALIZED) {
+            try {
+                if (existing.playState != AudioTrack.PLAYSTATE_PLAYING) {
+                    existing.play()
+                }
+                return
+            } catch (e: Exception) {
+                Log.w(tag, "Failed to reuse active AudioTrack, recreating", e)
+            }
+        }
+
         try {
             audioTrack?.stop()
             audioTrack?.release()

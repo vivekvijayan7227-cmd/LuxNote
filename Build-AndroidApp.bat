@@ -4,8 +4,16 @@ echo ========================================================
 echo  LuxNote (Android Edition) - Build Tool
 echo ========================================================
 
-set "JAVA_HOME=C:\Users\Vivek\AppData\Local\Programs\jdk-21"
-set "PATH=%JAVA_HOME%\bin;C:\Users\Vivek\AppData\AndroidCLI;C:\Users\Vivek\AppData\Local\Android\Sdk\platform-tools;%PATH%"
+@rem Discover JAVA_HOME if not already set in environment
+if "%JAVA_HOME%"=="" (
+    if exist "C:\Users\Vivek\AppData\Local\Programs\jdk-21" (
+        set "JAVA_HOME=C:\Users\Vivek\AppData\Local\Programs\jdk-21"
+    )
+)
+
+if defined JAVA_HOME (
+    set "PATH=%JAVA_HOME%\bin;%PATH%"
+)
 
 cd /d "%~dp0HiResPlayer-Android"
 
@@ -27,7 +35,11 @@ if %ERRORLEVEL% NEQ 0 (
 
 echo.
 echo [3/3] Copying LuxNote Production APK...
-copy /Y "app\build\outputs\apk\release\app-release-unsigned.apk" "%~dp0LuxNote.apk" >nul
+if exist "app\build\outputs\apk\release\app-release.apk" (
+    copy /Y "app\build\outputs\apk\release\app-release.apk" "%~dp0LuxNote.apk" >nul
+) else if exist "app\build\outputs\apk\release\app-release-unsigned.apk" (
+    copy /Y "app\build\outputs\apk\release\app-release-unsigned.apk" "%~dp0LuxNote.apk" >nul
+)
 
 echo.
 echo ========================================================

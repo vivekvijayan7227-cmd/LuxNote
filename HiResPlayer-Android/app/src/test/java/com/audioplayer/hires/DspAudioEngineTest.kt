@@ -239,4 +239,68 @@ class DspAudioEngineTest {
         preamp.resetClipping()
         assertFalse("Clipping must be false after explicit reset", preamp.hasClipped())
     }
+
+    @Test
+    fun testPcmFormatConverterResolveEffectiveEncoding() {
+        // Explicit valid encodings
+        assertEquals(
+            android.media.AudioFormat.ENCODING_PCM_16BIT,
+            PcmFormatConverter.resolveEffectiveEncoding(android.media.AudioFormat.ENCODING_PCM_16BIT)
+        )
+        assertEquals(
+            android.media.AudioFormat.ENCODING_PCM_FLOAT,
+            PcmFormatConverter.resolveEffectiveEncoding(android.media.AudioFormat.ENCODING_PCM_FLOAT)
+        )
+        assertEquals(
+            android.media.AudioFormat.ENCODING_PCM_24BIT_PACKED,
+            PcmFormatConverter.resolveEffectiveEncoding(android.media.AudioFormat.ENCODING_PCM_24BIT_PACKED)
+        )
+        assertEquals(
+            android.media.AudioFormat.ENCODING_PCM_32BIT,
+            PcmFormatConverter.resolveEffectiveEncoding(android.media.AudioFormat.ENCODING_PCM_32BIT)
+        )
+
+        // Missing or unspecified (0 or ENCODING_INVALID) safely defaults to 16-bit
+        assertEquals(
+            android.media.AudioFormat.ENCODING_PCM_16BIT,
+            PcmFormatConverter.resolveEffectiveEncoding(0)
+        )
+        assertEquals(
+            android.media.AudioFormat.ENCODING_PCM_16BIT,
+            PcmFormatConverter.resolveEffectiveEncoding(android.media.AudioFormat.ENCODING_INVALID)
+        )
+
+        // Unsupported explicit formats must throw IllegalArgumentException
+        try {
+            PcmFormatConverter.resolveEffectiveEncoding(9999)
+            fail("Expected IllegalArgumentException for unknown explicit encoding 9999")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message!!.contains("Unsupported explicit PCM encoding"))
+        }
+    }
+
+    @Test
+    fun testCenterChannelStemBalance() {
+        val processor = CenterChannelProcessor()
+        processor.setSampleRate(48000.0f)
+
+        // Initially inactive with 1.0, 1.0
+        assertFalse(processor.isActive())
+
+        // Adjust vocal gain to 0.0 (mute vocal / center) and instrument to 1.5
+        processor.setStemBalance(0.0f, 1.5f)
+        assertTrue(processor.isActive())
+
+        // Feed pure center signal (L = 0.5, R = 0.5): Mid = 0.5, Side = 0.0
+        val centerFrame = floatArrayOf(0.5f, 0.5f)
+        processor.processFrame(centerFrame, 0)
+
+        // Vocal attenuated to 0, side is 0, so output should be 0.0
+        assertEquals(0.0f, centerFrame[0], 0.001f)
+        assertEquals(0.0f, centerFrame[1], 0.001f)
+
+        // Reset stem balance
+        processor.setStemBalance(1.0f, 1.0f)
+        assertFalse(processor.isActive())
+    }
 }
