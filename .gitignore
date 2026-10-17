@@ -1,0 +1,17 @@
+# Built binaries and caches
+.gradle/
+**/build/
+.cxx/
+.externalNativeBuild/
+local.properties
+captures/
+*.iml
+.idea/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Output archives / logs
+*.log
