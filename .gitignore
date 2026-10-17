@@ -17,3 +17,8 @@ Desktop.ini
 *.log
 *.jks
 *.keystore
+
+# Kotlin / Python cache
+.kotlin/
+__pycache__/
+*.py[cod]

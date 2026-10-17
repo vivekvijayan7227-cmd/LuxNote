@@ -79,12 +79,12 @@ Built using Jetpack Compose following strict studio-grade design principles:
 │   │   │   ├── data/                 # AudioLibraryRepository, MediaStoreObserver, Diagnostics
 │   │   │   ├── service/              # HiResAudioService (MediaStyle foreground service)
 │   │   │   └── ui/                   # Jetpack Compose UI (Obsidian Studio theme & screens)
-│   │   └── src/test/                 # Unit test suite (16 tests verifying DSP & storage)
+│   │   └── src/test/                 # Unit test suite (26 tests verifying DSP & storage)
 │   ├── build.gradle.kts
 │   └── gradlew.bat
-├── starter_kit/                       # Obsidian Studio UI/UX design tokens and assets
 ├── Build-AndroidApp.bat               # Windows 1-click test & release build tool
 ├── LuxNote.apk                        # Production release APK (multi-pass verified)
+├── LuxNote.apk.sha256                 # Cryptographic verification checksum
 └── README.md                          # Documentation
 ```
 
