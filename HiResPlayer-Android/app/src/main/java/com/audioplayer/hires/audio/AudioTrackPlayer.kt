@@ -81,6 +81,10 @@ class AudioTrackPlayer(
 
     private var sampleRate = 44100
     @Volatile private var seekTargetUs: Long = -1L
+    private val currentSessionId = java.util.concurrent.atomic.AtomicLong(0L)
+
+    val isBitPerfectCapable: Boolean
+        get() = getOutputDevices().any { it.isBitPerfectCapable }
 
     var onStatusChanged: ((PlayerStatus) -> Unit)? = null
     var onPositionChanged: ((Long) -> Unit)? = null
@@ -97,9 +101,20 @@ class AudioTrackPlayer(
         }
     }
 
+    companion object {
+        @Volatile var instance: AudioTrackPlayer? = null
+            private set
+    }
+
+    var isUsingFallback: Boolean = false
+        private set
+
+    fun isWakeLockHeld(): Boolean = wakeLock?.isHeld == true
+
     init {
+        instance = this
         try {
-            wakeLock = powerManager?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "HiResStudio:AudioPlayerPlayback")
+            wakeLock = powerManager?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "LuxNote:AudioPlayerPlayback")
             wakeLock?.setReferenceCounted(false)
         } catch (e: Exception) {
             Log.w(tag, "Failed to initialize wake lock", e)
@@ -245,10 +260,15 @@ class AudioTrackPlayer(
     }
 
     /**
-     * Start playing a real audio track.
+     * Start playing an audio track with serialized session ownership.
      */
     fun play(track: Track) {
-        stop()
+        val thisSession = currentSessionId.incrementAndGet()
+        val oldJob = playbackJob
+        playbackJob = null
+        oldJob?.cancel()
+        positionUpdaterJob?.cancel()
+        positionUpdaterJob = null
 
         if (track.uriString.isBlank()) {
             Log.w(tag, "Cannot play track with empty URI: ${track.title}")
@@ -263,8 +283,14 @@ class AudioTrackPlayer(
         onStatusChanged?.invoke(status)
         acquireWakeLock()
 
-        playbackJob = scope.launch {
-            decodeAndStream(track)
+        playbackJob = scope.launch(Dispatchers.IO) {
+            try {
+                oldJob?.join()
+            } catch (_: Exception) {}
+            cleanupDecoders()
+            if (thisSession == currentSessionId.get()) {
+                decodeAndStream(track, thisSession)
+            }
         }
     }
 
@@ -297,12 +323,21 @@ class AudioTrackPlayer(
     }
 
     fun stop() {
-        playbackJob?.cancel()
+        val thisSession = currentSessionId.incrementAndGet()
+        val oldJob = playbackJob
         playbackJob = null
+        oldJob?.cancel()
         positionUpdaterJob?.cancel()
         positionUpdaterJob = null
 
-        cleanupDecoders()
+        scope.launch(Dispatchers.IO) {
+            try {
+                oldJob?.join()
+            } catch (_: Exception) {}
+            if (thisSession == currentSessionId.get()) {
+                cleanupDecoders()
+            }
+        }
         releaseWakeLock()
 
         status = PlayerStatus.STOPPED
@@ -361,7 +396,8 @@ class AudioTrackPlayer(
     private fun playWithMediaPlayer(track: Track) {
         try {
             cleanupDecoders()
-            AudioDiagnostics.log("playWithMediaPlayer starting: '${track.title}'")
+            isUsingFallback = true
+            AudioDiagnostics.log("playWithMediaPlayer starting: '${track.title}' (DSP Bypassed)")
             val mp = MediaPlayer()
             fallbackPlayer = mp
 
@@ -440,7 +476,7 @@ class AudioTrackPlayer(
     /**
      * Decoding and streaming loop via MediaExtractor + MediaCodec + StudioDspPipeline -> AudioTrack.
      */
-    private suspend fun decodeAndStream(track: Track) {
+    private suspend fun decodeAndStream(track: Track, sessionId: Long = 0L) {
         val extractor = MediaExtractor()
         mediaExtractor = extractor
 
@@ -516,16 +552,6 @@ class AudioTrackPlayer(
             } else 2
 
             val mime = mediaFormat.getString(MediaFormat.KEY_MIME) ?: ""
-            // Check if format is uncompressed PCM/WAV or has no native MediaCodec decoder
-            if (mime.isBlank() || mime == "audio/raw" || mime.contains("wav") || mime.contains("x-wav")) {
-                Log.d(tag, "Direct PCM/WAV format ($mime) detected. Routing directly to MediaPlayer fallback.")
-                cleanupDecoders()
-                withContext(Dispatchers.Main) {
-                    playWithMediaPlayer(track)
-                }
-                return
-            }
-
             val codec = try {
                 MediaCodec.createDecoderByType(mime)
             } catch (e: Exception) {
@@ -538,8 +564,15 @@ class AudioTrackPlayer(
             }
 
             mediaCodec = codec
+            isUsingFallback = false
             codec.configure(mediaFormat, null, null, 0)
             codec.start()
+
+            var streamEncoding = if (mediaFormat.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
+                mediaFormat.getInteger(MediaFormat.KEY_PCM_ENCODING)
+            } else {
+                AudioFormat.ENCODING_PCM_16BIT
+            }
 
             sampleRate = streamSampleRate
             dspPipeline.setSampleRate(streamSampleRate.toFloat())
@@ -553,7 +586,7 @@ class AudioTrackPlayer(
             var startOffsetMs: Long = 0L
             var baseHeadPosition: Long = (audioTrack?.playbackHeadPosition?.toLong() ?: 0L) and 0xFFFFFFFFL
 
-            while (currentCoroutineContext().isActive && status != PlayerStatus.STOPPED) {
+            while (currentCoroutineContext().isActive && status != PlayerStatus.STOPPED && sessionId == currentSessionId.get()) {
                 if (status == PlayerStatus.PAUSED) {
                     delay(30)
                     continue
@@ -607,11 +640,11 @@ class AudioTrackPlayer(
                         outBuffer.limit(bufferInfo.offset + bufferInfo.size)
                         outBuffer.order(ByteOrder.LITTLE_ENDIAN)
 
+                        val bytesPerSample = PcmFormatConverter.getBytesPerSample(streamEncoding)
                         val channels = streamChannels.coerceAtLeast(1)
-                        val bytesPerSample = 2 // standard 16-bit PCM
-                        val frameSize = bytesPerSample * channels
+                        val frameSizeBytes = bytesPerSample * channels
                         val remainingBytes = outBuffer.remaining()
-                        val frames = remainingBytes / frameSize
+                        val frames = if (frameSizeBytes > 0) remainingBytes / frameSizeBytes else 0
 
                         if (frames > 0) {
                             val requiredFloatCount = frames * 2
@@ -619,58 +652,74 @@ class AudioTrackPlayer(
                                 floatBuffer = FloatArray(requiredFloatCount)
                             }
 
-                            if (channels == 1) {
-                                for (f in 0 until frames) {
-                                    val s = if (outBuffer.remaining() >= 2) outBuffer.short else 0.toShort()
-                                    val flt = s / 32768.0f
-                                    floatBuffer[f * 2] = flt
-                                    floatBuffer[f * 2 + 1] = flt
-                                }
-                            } else {
-                                for (f in 0 until frames) {
-                                    val sL = if (outBuffer.remaining() >= 2) outBuffer.short else 0.toShort()
-                                    val sR = if (outBuffer.remaining() >= 2) outBuffer.short else 0.toShort()
-                                    floatBuffer[f * 2] = sL / 32768.0f
-                                    floatBuffer[f * 2 + 1] = sR / 32768.0f
-                                    for (c in 2 until channels) {
-                                        if (outBuffer.remaining() >= 2) outBuffer.short
+                            // Format-aware PCM conversion (16-bit, float, 24-bit, 32-bit int, 8-bit, multichannel fold-down)
+                            val convertedFrames = PcmFormatConverter.convertToStereoFloat(
+                                outBuffer,
+                                streamEncoding,
+                                streamChannels,
+                                floatBuffer
+                            )
+
+                            if (convertedFrames > 0) {
+                                // 3. Process through Studio 32-bit Float DSP Pipeline
+                                dspPipeline.processInterleavedStereo(floatBuffer, convertedFrames)
+
+                                // 4. Stream to AudioTrack (looping to guarantee all samples are written)
+                                val totalSamples = convertedFrames * 2
+                                var samplesWritten = 0
+
+                                if (isFloatTrack) {
+                                    while (samplesWritten < totalSamples && currentCoroutineContext().isActive && status != PlayerStatus.STOPPED && sessionId == currentSessionId.get()) {
+                                        val countToWrite = totalSamples - samplesWritten
+                                        val written = audioTrack?.write(floatBuffer, samplesWritten, countToWrite, AudioTrack.WRITE_BLOCKING) ?: 0
+                                        if (written > 0) {
+                                            samplesWritten += written
+                                        } else if (written < 0) {
+                                            Log.w(tag, "AudioTrack float write error: $written. Rebuilding track...")
+                                            createAudioTrack(streamSampleRate)
+                                            baseHeadPosition = (audioTrack?.playbackHeadPosition?.toLong() ?: 0L) and 0xFFFFFFFFL
+                                            break
+                                        } else {
+                                            break
+                                        }
+                                    }
+                                } else {
+                                    if (shortBuffer.size < totalSamples) {
+                                        shortBuffer = ShortArray(totalSamples)
+                                    }
+                                    for (i in 0 until totalSamples) {
+                                        val sample = floatBuffer[i].coerceIn(-1.0f, 1.0f)
+                                        shortBuffer[i] = (sample * 32767.0f).toInt().toShort()
+                                    }
+                                    while (samplesWritten < totalSamples && currentCoroutineContext().isActive && status != PlayerStatus.STOPPED && sessionId == currentSessionId.get()) {
+                                        val countToWrite = totalSamples - samplesWritten
+                                        val written = audioTrack?.write(shortBuffer, samplesWritten, countToWrite, AudioTrack.WRITE_BLOCKING) ?: 0
+                                        if (written > 0) {
+                                            samplesWritten += written
+                                        } else if (written < 0) {
+                                            Log.w(tag, "AudioTrack 16-bit write error: $written. Rebuilding track...")
+                                            createAudioTrack(streamSampleRate)
+                                            baseHeadPosition = (audioTrack?.playbackHeadPosition?.toLong() ?: 0L) and 0xFFFFFFFFL
+                                            break
+                                        } else {
+                                            break
+                                        }
                                     }
                                 }
-                            }
 
-                            // 3. Process through Studio 32-bit Float DSP Pipeline
-                            dspPipeline.processInterleavedStereo(floatBuffer, frames)
-
-                            // 4. Stream directly to AudioTrack hardware output (Float or 16-bit PCM)
-                            val written = if (isFloatTrack) {
-                                audioTrack?.write(floatBuffer, 0, frames * 2, AudioTrack.WRITE_BLOCKING) ?: 0
-                            } else {
-                                val totalSamples = frames * 2
-                                if (shortBuffer.size < totalSamples) {
-                                    shortBuffer = ShortArray(totalSamples)
+                                val actualFramesWritten = samplesWritten / 2
+                                if (actualFramesWritten > 0) {
+                                    totalFramesWritten += actualFramesWritten
                                 }
-                                for (i in 0 until totalSamples) {
-                                    val sample = floatBuffer[i].coerceIn(-1.0f, 1.0f)
-                                    shortBuffer[i] = (sample * 32767.0f).toInt().toShort()
+
+                                // Compute physical hardware played position
+                                val currentHead = (audioTrack?.playbackHeadPosition?.toLong() ?: 0L) and 0xFFFFFFFFL
+                                val deltaHead = (currentHead - baseHeadPosition).coerceAtLeast(0L)
+                                val playedMs = startOffsetMs + (deltaHead * 1000L) / streamSampleRate
+                                if (playedMs != currentPositionMs && playedMs >= 0) {
+                                    currentPositionMs = playedMs
+                                    onPositionChanged?.invoke(currentPositionMs)
                                 }
-                                audioTrack?.write(shortBuffer, 0, totalSamples, AudioTrack.WRITE_BLOCKING) ?: 0
-                            }
-
-                            if (written > 0) {
-                                totalFramesWritten += frames
-                            } else if (written < 0) {
-                                Log.w(tag, "AudioTrack write returned error: $written. Rebuilding track...")
-                                createAudioTrack(streamSampleRate)
-                                baseHeadPosition = (audioTrack?.playbackHeadPosition?.toLong() ?: 0L) and 0xFFFFFFFFL
-                            }
-
-                            // Compute physical hardware played position
-                            val currentHead = (audioTrack?.playbackHeadPosition?.toLong() ?: 0L) and 0xFFFFFFFFL
-                            val deltaHead = (currentHead - baseHeadPosition).coerceAtLeast(0L)
-                            val playedMs = startOffsetMs + (deltaHead * 1000L) / streamSampleRate
-                            if (playedMs != currentPositionMs && playedMs >= 0) {
-                                currentPositionMs = playedMs
-                                onPositionChanged?.invoke(currentPositionMs)
                             }
                         }
                     }
@@ -696,6 +745,10 @@ class AudioTrackPlayer(
                     }
                     if (newFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
                         streamChannels = newFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                    }
+                    if (newFormat.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
+                        streamEncoding = newFormat.getInteger(MediaFormat.KEY_PCM_ENCODING)
+                        Log.d(tag, "Format changed: encoding=$streamEncoding, channels=$streamChannels, rate=$streamSampleRate")
                     }
                     didWork = true
                 }

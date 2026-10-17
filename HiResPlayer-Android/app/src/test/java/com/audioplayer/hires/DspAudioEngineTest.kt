@@ -152,4 +152,91 @@ class DspAudioEngineTest {
         }
         assertTrue("FFT should detect energy from sine wave", maxVal > 0.05f)
     }
+
+    @Test
+    fun testPcmFormatConverter16BitStereo() {
+        // 2 frames of 16-bit PCM stereo (4 samples): 0x7FFF (+1.0), 0x8000 (-1.0)
+        val byteBuf = java.nio.ByteBuffer.allocate(8).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        byteBuf.putShort(32767.toShort())
+        byteBuf.putShort((-32768).toShort())
+        byteBuf.putShort(16384.toShort())
+        byteBuf.putShort(0.toShort())
+        byteBuf.flip()
+
+        val outFloat = FloatArray(4)
+        val frames = PcmFormatConverter.convertToStereoFloat(
+            byteBuffer = byteBuf,
+            encoding = android.media.AudioFormat.ENCODING_PCM_16BIT,
+            channelCount = 2,
+            targetFloatBuffer = outFloat
+        )
+
+        assertEquals(2, frames)
+        assertEquals(1.0f, outFloat[0], 0.001f)
+        assertEquals(-1.0f, outFloat[1], 0.001f)
+        assertEquals(0.5f, outFloat[2], 0.001f)
+        assertEquals(0.0f, outFloat[3], 0.001f)
+    }
+
+    @Test
+    fun testPcmFormatConverterMultichannelFoldDown() {
+        // 1 frame of 5.1 channels (L, R, C, LFE, Ls, Rs): all 16-bit
+        // L=0x4000 (~0.5), R=0x4000 (~0.5), C=0x4000 (~0.5), LFE=0x4000, Ls=0x2000 (~0.25), Rs=0x2000 (~0.25)
+        val byteBuf = java.nio.ByteBuffer.allocate(12).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        byteBuf.putShort(16384.toShort()) // L
+        byteBuf.putShort(16384.toShort()) // R
+        byteBuf.putShort(16384.toShort()) // C
+        byteBuf.putShort(16384.toShort()) // LFE
+        byteBuf.putShort(8192.toShort())  // Ls
+        byteBuf.putShort(8192.toShort())  // Rs
+        byteBuf.flip()
+
+        val outFloat = FloatArray(2)
+        val frames = PcmFormatConverter.convertToStereoFloat(
+            byteBuffer = byteBuf,
+            encoding = android.media.AudioFormat.ENCODING_PCM_16BIT,
+            channelCount = 6,
+            targetFloatBuffer = outFloat
+        )
+
+        assertEquals(1, frames)
+        // L output should fold L + 0.707*C + 0.707*Ls
+        assertTrue("Fold-down L must contain folded center and surround energy", outFloat[0] > 0.5f)
+        assertTrue("Fold-down R must contain folded center and surround energy", outFloat[1] > 0.5f)
+        assertTrue("Fold-down channels must not exceed 1.0 (anti-clip clamped)", outFloat[0] <= 1.0f)
+    }
+
+    @Test
+    fun testParametricEqualizer12Bands() {
+        val pEq = ParametricEqualizer()
+        pEq.setSampleRate(48000.0f)
+
+        // Configure band 3 as peaking at 1 kHz with +4 dB
+        pEq.configureBand(3, true, BiquadType.Peaking, 1000.0f, 4.0f, 1.414f)
+        assertFalse(pEq.isBypassed())
+
+        val mag1k = pEq.evaluateMagnitudeDb(1000.0f)
+        assertEquals(4.0f, mag1k, 0.25f)
+
+        // Bypass band 3
+        pEq.configureBand(3, false, BiquadType.Peaking, 1000.0f, 4.0f, 1.414f)
+        assertTrue(pEq.isBypassed())
+    }
+
+    @Test
+    fun testPreampTimestampPeakHold() {
+        val preamp = PreampGainStage()
+        assertFalse(preamp.hasClipped())
+
+        // Trigger clipping with overdriven signal
+        preamp.setGainDb(6.0f)
+        val frame = floatArrayOf(0.99f, 0.99f)
+        preamp.processFrame(frame, 0)
+
+        assertTrue("Clipping must be held true immediately after clip event", preamp.hasClipped())
+
+        // Explicit reset clears clipping immediately
+        preamp.resetClipping()
+        assertFalse("Clipping must be false after explicit reset", preamp.hasClipped())
+    }
 }

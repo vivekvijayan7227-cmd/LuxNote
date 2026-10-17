@@ -5,12 +5,25 @@
 #include <cstdint>
 #include <atomic>
 #include <algorithm>
+#include <mutex>
+#include <chrono>
 
 namespace hires {
 
 constexpr int FFT_SIZE = 1024;
-constexpr int NUM_EQ_BANDS = 10;
+constexpr int NUM_GRAPHIC_BANDS = 10;
+constexpr int NUM_PARAMETRIC_BANDS = 12;
 constexpr float PI = 3.14159265358979323846f;
+
+enum class FilterType : int {
+    Peaking = 0,
+    LowShelf = 1,
+    HighShelf = 2,
+    LowPass = 3,
+    HighPass = 4,
+    Notch = 5,
+    BandPass = 6
+};
 
 struct BiquadCoeffs {
     float b0 = 1.0f, b1 = 0.0f, b2 = 0.0f;
@@ -20,6 +33,40 @@ struct BiquadCoeffs {
 struct BiquadState {
     float z1_l = 0.0f, z2_l = 0.0f;
     float z1_r = 0.0f, z2_r = 0.0f;
+    void reset() {
+        z1_l = z2_l = z1_r = z2_r = 0.0f;
+    }
+};
+
+struct ParametricBandConfig {
+    bool enabled = false;
+    FilterType type = FilterType::Peaking;
+    float frequency = 1000.0f;
+    float gainDb = 0.0f;
+    float q = 0.707f;
+};
+
+// Snapshot of all DSP coefficients and configuration (for thread-safe lock-free double buffering)
+struct DspSnapshot {
+    float preampLinear = 1.0f;
+    float graphicFrequencies[NUM_GRAPHIC_BANDS] = {
+        31.25f, 62.5f, 125.0f, 250.0f, 500.0f,
+        1000.0f, 2000.0f, 4000.0f, 8000.0f, 16000.0f
+    };
+    float graphicGainsDb[NUM_GRAPHIC_BANDS] = {0.0f};
+    BiquadCoeffs graphicCoeffs[NUM_GRAPHIC_BANDS];
+    bool graphicActive = false;
+    
+    ParametricBandConfig paramConfigs[NUM_PARAMETRIC_BANDS];
+    BiquadCoeffs paramCoeffs[NUM_PARAMETRIC_BANDS];
+    bool paramActive = false;
+    
+    int vocalMode = 0; // 0=off, 1=vocal focus, 2=instrumental focus
+    float vocalAmount = 0.0f;
+    BiquadCoeffs vocalBoostCoeffs;
+    BiquadCoeffs vocalShelfCoeffs;
+    BiquadCoeffs lpBassCoeffs;
+    BiquadCoeffs hpAirCoeffs;
 };
 
 class HiResAudioEngine {
@@ -29,6 +76,7 @@ public:
 
     void setSampleRate(float sampleRate);
     void setGraphicBandGain(int band, float gainDb);
+    void setParametricBand(int band, bool enabled, int type, float freq, float gainDb, float q);
     void setPreampGain(float gainDb);
     void setVocalFocus(int mode, float amount);
     void setDspEnabled(bool enabled);
@@ -36,37 +84,44 @@ public:
     void processInterleavedStereo(float* buffer, int frameCount);
     void computeFftBands(float* outBands, int bandCount);
 
-    bool hasClipped() const { return m_hasClipped.load(std::memory_order_relaxed); }
-    void resetClipping() { m_hasClipped.store(false, std::memory_order_relaxed); }
+    bool hasClipped() const {
+        auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        int64_t last = m_lastClipTimeMs.load(std::memory_order_relaxed);
+        return (now - last) < 1500;
+    }
+    void resetClipping() { m_lastClipTimeMs.store(0, std::memory_order_relaxed); }
 
     float getPeakL() const { return m_peakL.load(std::memory_order_relaxed); }
     float getPeakR() const { return m_peakR.load(std::memory_order_relaxed); }
 
 private:
-    void recomputeBiquad(int band);
+    void recomputeGraphic(int band, DspSnapshot& snap);
+    void recomputeParametric(int band, DspSnapshot& snap);
+    void recomputeVocal(DspSnapshot& snap);
+    void commitSnapshot();
+    static BiquadCoeffs computeCoeffs(FilterType type, float f0, float gainDb, float Q, float sr);
     void performFft(float* real, float* imag, int n);
 
     float m_sampleRate = 44100.0f;
     std::atomic<bool> m_dspEnabled{false};
-    std::atomic<bool> m_hasClipped{false};
+    std::atomic<int64_t> m_lastClipTimeMs{0};
 
-    // Preamp
-    float m_preampGainLinear = 1.0f;
+    // Staging parameter state (modified by UI thread under mutex)
+    std::mutex m_stageMutex;
+    DspSnapshot m_staging;
+    
+    // Double buffered snapshot for lock-free audio thread reads
+    DspSnapshot m_snapshots[2];
+    std::atomic<int> m_activeSnapshotIndex{0};
 
-    // 10-Band Graphic EQ
-    float m_bandFrequencies[NUM_EQ_BANDS] = {
-        31.25f, 62.5f, 125.0f, 250.0f, 500.0f,
-        1000.0f, 2000.0f, 4000.0f, 8000.0f, 16000.0f
-    };
-    float m_bandGainsDb[NUM_EQ_BANDS] = {0.0f};
-    BiquadCoeffs m_eqCoeffs[NUM_EQ_BANDS];
-    BiquadState m_eqStates[NUM_EQ_BANDS];
-
-    // Vocal Studio Mid/Side DSP
-    int m_vocalMode = 0; // 0=off, 1=vocal focus, 2=instrumental focus
-    float m_vocalAmount = 0.0f;
-    BiquadCoeffs m_vocalShelfCoeffs;
+    // Audio thread filter states (only accessed on audio thread)
+    BiquadState m_graphicStates[NUM_GRAPHIC_BANDS];
+    BiquadState m_paramStates[NUM_PARAMETRIC_BANDS];
+    BiquadState m_vocalBoostState;
     BiquadState m_vocalShelfState;
+    BiquadState m_lpBassState;
+    BiquadState m_hpAirState;
 
     // Spectrum Analyzer
     float m_fftBuffer[FFT_SIZE] = {0.0f};

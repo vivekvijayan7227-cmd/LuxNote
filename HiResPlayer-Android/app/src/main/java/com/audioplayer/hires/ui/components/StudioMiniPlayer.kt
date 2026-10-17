@@ -51,8 +51,7 @@ fun StudioMiniPlayer(viewModel: MainViewModel) {
         exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
     ) {
         val track = currentTrack ?: return@AnimatedVisibility
-        val durationMs = if (track.durationMs > 0) track.durationMs else 180000L
-        val progress = (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+        val progress = if (track.durationMs > 0) (positionMs.toFloat() / track.durationMs.toFloat()).coerceIn(0f, 1f) else 0f
 
         Surface(
             modifier = Modifier

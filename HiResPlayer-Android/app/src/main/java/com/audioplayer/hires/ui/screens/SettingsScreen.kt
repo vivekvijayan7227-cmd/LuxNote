@@ -26,8 +26,8 @@ import com.audioplayer.hires.ui.theme.StudioColors
 fun SettingsScreen(viewModel: MainViewModel) {
     val libraryTracks by viewModel.libraryTracks.collectAsState()
     val queues by viewModel.queues.collectAsState()
-    var isGaplessEnabled by remember { mutableStateOf(true) }
-    var isAutoResumeEnabled by remember { mutableStateOf(true) }
+    val isGaplessEnabled by viewModel.isGaplessEnabled.collectAsState()
+    val isAutoResumeEnabled by viewModel.isAutoResumeEnabled.collectAsState()
 
     Column(
         modifier = Modifier
@@ -104,7 +104,7 @@ fun SettingsScreen(viewModel: MainViewModel) {
                     title = "Gapless Playback",
                     subtitle = "Pre-buffer next track for zero-gap audio transition",
                     checked = isGaplessEnabled,
-                    onCheckedChange = { isGaplessEnabled = it }
+                    onCheckedChange = { viewModel.setGaplessEnabled(it) }
                 )
                 HorizontalDivider(color = StudioColors.Divider, thickness = 1.dp)
                 SettingsSwitchRow(
@@ -112,7 +112,7 @@ fun SettingsScreen(viewModel: MainViewModel) {
                     title = "Automatic Resume",
                     subtitle = "Restore queue and position when app reopens",
                     checked = isAutoResumeEnabled,
-                    onCheckedChange = { isAutoResumeEnabled = it }
+                    onCheckedChange = { viewModel.setAutoResumeEnabled(it) }
                 )
             }
         }

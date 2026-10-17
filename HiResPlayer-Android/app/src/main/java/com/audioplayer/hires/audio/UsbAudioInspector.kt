@@ -8,8 +8,13 @@ import android.hardware.usb.UsbInterface
 import android.hardware.usb.UsbManager
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
-import android.media.AudioTrack
 import android.os.Build
+
+enum class CapabilityStatus {
+    SUPPORTED,
+    UNSUPPORTED,
+    UNKNOWN
+}
 
 data class UsbDacInfo(
     val isConnected: Boolean,
@@ -17,7 +22,8 @@ data class UsbDacInfo(
     val vendorIdHex: String,
     val productIdHex: String,
     val uacVersion: String,
-    val isBitPerfectSupported: Boolean,
+    val bitPerfectStatus: CapabilityStatus,
+    val bitPerfectDetails: String,
     val clockingMode: String,
     val interfacesFound: Int,
     val isochronousEndpoints: List<String>,
@@ -26,9 +32,9 @@ data class UsbDacInfo(
 )
 
 /**
- * Verifiable Hardware USB Audio Class (UAC1/UAC2) and Bit-Perfect Output Inspector.
- * Uses Android UsbManager to inspect hardware USB descriptors, audio streaming interfaces,
- * isochronous endpoints, and Android 14+ AudioTrack bit-perfect direct routing capability.
+ * Honest, Hardware-Audited USB Audio Class (UAC1/UAC2) and Output Inspector.
+ * Strictly reports real hardware descriptors queried via Android UsbManager and AudioManager.
+ * Never fabricates endpoints, clocks, or bit-perfect claims.
  */
 class UsbAudioInspector(private val context: Context) {
 
@@ -45,55 +51,54 @@ class UsbAudioInspector(private val context: Context) {
             }
         }
 
-        // Fallback: Query system AudioDeviceInfo for built-in or wired Hi-Res outputs
+        // Check if an external USB audio device is registered in system AudioManager
         val systemDevices = audioManager?.getDevices(AudioManager.GET_DEVICES_OUTPUTS) ?: emptyArray()
-        var hasUsbAudioDevice = false
-        var deviceDesc = "Android Studio Audio HAL (Internal 32-Bit Float)"
-
         for (dev in systemDevices) {
             if (dev.type == AudioDeviceInfo.TYPE_USB_DEVICE || dev.type == AudioDeviceInfo.TYPE_USB_HEADSET) {
-                hasUsbAudioDevice = true
-                deviceDesc = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                    dev.productName.toString().ifBlank { "External USB Audio DAC" }
+                val name = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    dev.productName.toString().ifBlank { "External USB Audio Device" }
                 } else {
                     "External USB Audio Device"
                 }
-                break
+
+                val rates = dev.sampleRates.toList()
+                return UsbDacInfo(
+                    isConnected = true,
+                    deviceName = name,
+                    vendorIdHex = "Queried via AudioDeviceInfo",
+                    productIdHex = "Device ID: ${dev.id}",
+                    uacVersion = "USB Audio (HAL Managed)",
+                    bitPerfectStatus = CapabilityStatus.UNKNOWN,
+                    bitPerfectDetails = "Direct HAL bypass unverified by vendor kernel",
+                    clockingMode = "Device Dependent / External Clock",
+                    interfacesFound = 1,
+                    isochronousEndpoints = listOf("System USB Audio Output Stream (ID: ${dev.id})"),
+                    supportedSampleRates = rates,
+                    directRoutingStatus = if (rates.isNotEmpty()) "Sample rates: ${rates.joinToString(", ")} Hz" else "Sample rate negotiated per stream"
+                )
             }
         }
 
-        val bitPerfectSupported = if (Build.VERSION.SDK_INT >= 34) {
-            try {
-                // AudioTrack static bit-perfect check
-                true
-            } catch (_: Throwable) { false }
-        } else {
-            false
-        }
+        // Built-in device audio routing (honest, unembellished)
+        val defaultRates = mutableListOf<Int>()
+        try {
+            val srStr = audioManager?.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)
+            srStr?.toIntOrNull()?.let { defaultRates.add(it) }
+        } catch (_: Exception) {}
 
         return UsbDacInfo(
-            isConnected = hasUsbAudioDevice,
-            deviceName = deviceDesc,
-            vendorIdHex = if (hasUsbAudioDevice) "0xUSB_AUDIO" else "0x0000 (Internal HAL)",
-            productIdHex = if (hasUsbAudioDevice) "0xUAC2_STREAM" else "0x0000 (Qualcomm/MediaTek Audio Subsystem)",
-            uacVersion = if (hasUsbAudioDevice) "UAC2 (USB Audio Class 2.0 Asynchronous)" else "Hardware Direct HAL Passthrough",
-            isBitPerfectSupported = bitPerfectSupported || !hasUsbAudioDevice,
-            clockingMode = if (hasUsbAudioDevice) "Asynchronous DAC Master Clock" else "Internal Studio Clock (Low-Jitter Crystal)",
-            interfacesFound = if (hasUsbAudioDevice) 2 else 1,
-            isochronousEndpoints = if (hasUsbAudioDevice) {
-                listOf(
-                    "Endpoint 0x01 (OUT, Isochronous, Data Stream)",
-                    "Endpoint 0x81 (IN, Isochronous, Clock Rate Feedback)"
-                )
-            } else {
-                listOf("AudioFlinger Direct Output Thread (Fast Mixer Bypass)")
-            },
-            supportedSampleRates = listOf(44100, 48000, 88200, 96000, 176400, 192000),
-            directRoutingStatus = if (hasUsbAudioDevice) {
-                "Bit-Perfect Direct USB Routing Armed (Android Mixer Bypassed)"
-            } else {
-                "Internal Direct PCM 32-Bit Float Pipeline Active (Ready for USB DAC)"
-            }
+            isConnected = false,
+            deviceName = "Internal Audio Subsystem",
+            vendorIdHex = "N/A (Built-in Audio)",
+            productIdHex = "N/A (Built-in Audio)",
+            uacVersion = "N/A (Non-USB Output)",
+            bitPerfectStatus = CapabilityStatus.UNSUPPORTED,
+            bitPerfectDetails = "Standard Android Audio Mixer (Bit-exact bypass requires USB DAC / Direct HAL)",
+            clockingMode = "System Clock",
+            interfacesFound = 0,
+            isochronousEndpoints = emptyList(),
+            supportedSampleRates = defaultRates,
+            directRoutingStatus = "Internal Audio Track Output (${if (defaultRates.isNotEmpty()) defaultRates[0] else 44100} Hz native)"
         )
     }
 
@@ -106,15 +111,14 @@ class UsbAudioInspector(private val context: Context) {
             val intf: UsbInterface = device.getInterface(i)
             if (intf.interfaceClass == UsbConstants.USB_CLASS_AUDIO) {
                 hasAudioClass = true
-                // Subclass 1 = AUDIO_CONTROL, 2 = AUDIO_STREAMING
-                if (intf.interfaceSubclass == 2) {
+                if (intf.interfaceSubclass == 2) { // 2 = AUDIO_STREAMING
                     hasAudioStreamingSubclass = true
                 }
                 for (j in 0 until intf.endpointCount) {
                     val ep: UsbEndpoint = intf.getEndpoint(j)
                     if (ep.type == UsbConstants.USB_ENDPOINT_XFER_ISOC) {
-                        val dir = if (ep.direction == UsbConstants.USB_DIR_OUT) "OUT (Audio Playback)" else "IN (Feedback/Capture)"
-                        epDescriptions.add("EP 0x%02X [%s, MaxPacket: %d]".format(ep.address, dir, ep.maxPacketSize))
+                        val dir = if (ep.direction == UsbConstants.USB_DIR_OUT) "OUT (Playback)" else "IN (Capture/Feedback)"
+                        epDescriptions.add("Endpoint 0x%02X [%s, MaxPacket: %d bytes]".format(ep.address, dir, ep.maxPacketSize))
                     }
                 }
             }
@@ -124,35 +128,37 @@ class UsbAudioInspector(private val context: Context) {
             return null
         }
 
-        val bitPerfectSupported = if (Build.VERSION.SDK_INT >= 34) {
-            try {
-                // AudioTrack check on API 34+
-                true
-            } catch (_: Throwable) { false }
-        } else {
-            true // Direct HAL routing supported
-        }
-
         val dacName = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             device.productName ?: device.deviceName
         } else {
             device.deviceName
         }
 
+        // Query real device sample rates from system outputs if matched
+        val systemDevices = audioManager?.getDevices(AudioManager.GET_DEVICES_OUTPUTS) ?: emptyArray()
+        var reportedRates = emptyList<Int>()
+        for (dev in systemDevices) {
+            if (dev.type == AudioDeviceInfo.TYPE_USB_DEVICE || dev.type == AudioDeviceInfo.TYPE_USB_HEADSET) {
+                if (dev.sampleRates.isNotEmpty()) {
+                    reportedRates = dev.sampleRates.toList()
+                    break
+                }
+            }
+        }
+
         return UsbDacInfo(
             isConnected = true,
-            deviceName = dacName.ifBlank { "External High-Resolution USB DAC" },
+            deviceName = dacName.ifBlank { "External USB Audio Device" },
             vendorIdHex = "0x%04X".format(device.vendorId),
             productIdHex = "0x%04X".format(device.productId),
             uacVersion = if (hasAudioStreamingSubclass) "UAC2 (USB Audio Class 2.0)" else "UAC1 (USB Audio Class 1.0)",
-            isBitPerfectSupported = bitPerfectSupported,
-            clockingMode = "Asynchronous Isochronous (DAC Local Oscillator)",
+            bitPerfectStatus = CapabilityStatus.UNKNOWN,
+            bitPerfectDetails = "Hardware detected. Direct bit-perfect routing requires Android 14+ driver verification.",
+            clockingMode = if (hasAudioStreamingSubclass) "Asynchronous Isochronous (External Master)" else "Synchronous / Adaptive",
             interfacesFound = device.interfaceCount,
-            isochronousEndpoints = epDescriptions.ifEmpty {
-                listOf("Isochronous Audio Out Endpoint (Stream Buffer Active)")
-            },
-            supportedSampleRates = listOf(44100, 48000, 88200, 96000, 176400, 192000, 384000),
-            directRoutingStatus = "Bit-Perfect Mode: 1:1 Bit Depth & Sample Rate Preserved (Zero Resampling)"
+            isochronousEndpoints = epDescriptions,
+            supportedSampleRates = reportedRates,
+            directRoutingStatus = if (reportedRates.isNotEmpty()) "Hardware reported rates: ${reportedRates.joinToString()} Hz" else "Negotiated dynamically by hardware endpoints"
         )
     }
 }

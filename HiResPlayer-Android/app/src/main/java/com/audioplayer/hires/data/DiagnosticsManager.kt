@@ -94,15 +94,12 @@ class DiagnosticsManager(private val context: Context) {
             permissions.add(PermissionStatus("READ_EXTERNAL_STORAGE", granted, true, "Access storage on Android 12 and below"))
         }
 
-        val allFilesAccess = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            Environment.isExternalStorageManager()
-        } else true
         permissions.add(
             PermissionStatus(
-                "MANAGE_EXTERNAL_STORAGE",
-                allFilesAccess,
+                "STORAGE_ACCESS_FRAMEWORK",
+                true,
                 false,
-                "All Files Access (Direct device folder browsing)"
+                "Standard Android Scoped Storage & MediaStore (Privacy-First)"
             )
         )
 
@@ -172,7 +169,7 @@ class DiagnosticsManager(private val context: Context) {
             floatAudioTrackSupported = floatSupported,
             pcm16AudioTrackSupported = pcm16Supported,
             serviceActive = HiResAudioService.instance != null,
-            wakeLockActive = true,
+            wakeLockActive = (HiResAudioService.instance?.isWakeLockHeld() == true) || (com.audioplayer.hires.audio.AudioTrackPlayer.instance?.isWakeLockHeld() == true),
             recentLogs = AudioDiagnostics.logs.toList()
         )
     }

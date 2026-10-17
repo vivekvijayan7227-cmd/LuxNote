@@ -62,6 +62,7 @@ fun NowPlayingScreen(viewModel: MainViewModel) {
     val playbackSpeed by viewModel.playbackSpeed.collectAsState()
     val sleepTimerRemainingSeconds by viewModel.sleepTimerRemainingSeconds.collectAsState()
     val isBitPerfect by viewModel.isBitPerfect.collectAsState()
+    val signalPathDescription by viewModel.signalPathDescription.collectAsState()
     val fftBands by viewModel.fftBands.collectAsState()
     val queues by viewModel.queues.collectAsState()
     val activeQueueId by viewModel.activeQueueId.collectAsState()
@@ -343,7 +344,7 @@ fun NowPlayingScreen(viewModel: MainViewModel) {
                     border = androidx.compose.foundation.BorderStroke(1.dp, StudioColors.Divider)
                 ) {
                     Text(
-                        text = "${track?.format ?: "FLAC"} · ${if (isBitPerfect) "Bit-Perfect" else "32-bit Float"}",
+                        text = "${track?.format ?: "FLAC"} · $signalPathDescription",
                         color = if (isBitPerfect) StudioColors.Success else StudioColors.Blue,
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,
@@ -368,7 +369,7 @@ fun NowPlayingScreen(viewModel: MainViewModel) {
             }
 
             // Seek Bar
-            val durationMs = if ((track?.durationMs ?: 0L) > 0) track!!.durationMs else 180000L
+            val durationMs = track?.durationMs ?: 0L
             PlaybackSeekBar(
                 positionMs = positionMs,
                 durationMs = durationMs,

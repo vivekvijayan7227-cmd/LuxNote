@@ -39,9 +39,14 @@ import kotlin.math.sin
 class AudioLibraryRepository(private val context: Context) {
 
     private val libraryFile = File(context.filesDir, "hires_library.json")
+    private val libraryAtomicFile = android.util.AtomicFile(libraryFile)
     private val playlistsFile = File(context.filesDir, "hires_playlists.json")
+    private val playlistsAtomicFile = android.util.AtomicFile(playlistsFile)
     private val queuesFile = File(context.filesDir, "hires_queues.json")
+    private val queuesAtomicFile = android.util.AtomicFile(queuesFile)
     private val bookmarksFile = File(context.filesDir, "hires_bookmarks.json")
+    private val bookmarksAtomicFile = android.util.AtomicFile(bookmarksFile)
+    private val repoLock = Any()
 
     /**
      * Query Android MediaStore to discover all music on the device asynchronously.
@@ -140,7 +145,7 @@ class AudioLibraryRepository(private val context: Context) {
                             title = title,
                             artist = artist,
                             album = album,
-                            durationMs = if (duration > 0) duration else 180000L,
+                            durationMs = if (duration > 0) duration else 0L,
                             sampleRate = 44100,
                             bitDepth = if (ext == "FLAC" || ext == "WAV") 24 else 16,
                             format = ext,
@@ -204,11 +209,40 @@ class AudioLibraryRepository(private val context: Context) {
                     .forEach { file ->
                         try {
                             val path = file.absolutePath
-                            val title = file.nameWithoutExtension
-                            val artist = "Local File"
-                            val album = file.parentFile?.name ?: "Storage"
+                            var title = file.nameWithoutExtension
+                            var artist = "Local File"
+                            var album = file.parentFile?.name ?: "Storage"
                             val ext = file.extension.uppercase()
                             val id = (path.hashCode().toLong() and 0xFFFFFFFFL)
+                            var duration = 0L
+                            var sampleRate = 44100
+                            var bitrate = if (ext == "FLAC") 1411 else 320
+
+                            val mmr = android.media.MediaMetadataRetriever()
+                            try {
+                                mmr.setDataSource(path)
+                                mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()?.let {
+                                    if (it > 0) duration = it
+                                }
+                                mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_TITLE)?.takeIf { it.isNotBlank() }?.let {
+                                    title = it
+                                }
+                                mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_ARTIST)?.takeIf { it.isNotBlank() }?.let {
+                                    artist = it
+                                }
+                                mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_ALBUM)?.takeIf { it.isNotBlank() }?.let {
+                                    album = it
+                                }
+                                mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_SAMPLERATE)?.toIntOrNull()?.let {
+                                    if (it > 0) sampleRate = it
+                                }
+                                mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_BITRATE)?.toIntOrNull()?.let {
+                                    if (it > 0) bitrate = it / 1000
+                                }
+                            } catch (_: Exception) {
+                            } finally {
+                                try { mmr.release() } catch (_: Exception) {}
+                            }
 
                             directTracks.add(
                                 Track(
@@ -216,11 +250,11 @@ class AudioLibraryRepository(private val context: Context) {
                                     title = title,
                                     artist = artist,
                                     album = album,
-                                    durationMs = 180000L,
-                                    sampleRate = 44100,
+                                    durationMs = duration,
+                                    sampleRate = sampleRate,
                                     bitDepth = if (ext == "FLAC" || ext == "WAV") 24 else 16,
                                     format = ext,
-                                    bitrateKbps = if (ext == "FLAC") 1411 else 320,
+                                    bitrateKbps = bitrate,
                                     uriString = path,
                                     artworkUri = null
                                 )
@@ -257,10 +291,40 @@ class AudioLibraryRepository(private val context: Context) {
     suspend fun extractTrackFromUriAsync(uri: Uri): Track = withContext(Dispatchers.IO) {
         val rawDisplayName = getDisplayNameFromUri(uri) ?: "Audio_${System.currentTimeMillis()}.mp3"
         val ext = rawDisplayName.substringAfterLast('.', "MP3").uppercase()
-        val title = rawDisplayName.substringBeforeLast('.')
-        val artist = "Local Storage"
-        val album = "Device Audio"
-        val duration = 180000L
+        var title = rawDisplayName.substringBeforeLast('.')
+        var artist = "Local Storage"
+        var album = "Device Audio"
+        var duration = 0L
+        var sampleRate = 44100
+        var bitrate = if (ext == "FLAC") 1411 else 320
+
+        val mmr = android.media.MediaMetadataRetriever()
+        try {
+            context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
+                mmr.setDataSource(pfd.fileDescriptor)
+                mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()?.let {
+                    if (it > 0) duration = it
+                }
+                mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_TITLE)?.takeIf { it.isNotBlank() }?.let {
+                    title = it
+                }
+                mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_ARTIST)?.takeIf { it.isNotBlank() }?.let {
+                    artist = it
+                }
+                mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_ALBUM)?.takeIf { it.isNotBlank() }?.let {
+                    album = it
+                }
+                mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_SAMPLERATE)?.toIntOrNull()?.let {
+                    if (it > 0) sampleRate = it
+                }
+                mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_BITRATE)?.toIntOrNull()?.let {
+                    if (it > 0) bitrate = it / 1000
+                }
+            }
+        } catch (_: Exception) {
+        } finally {
+            try { mmr.release() } catch (_: Exception) {}
+        }
 
         val trackId = (System.currentTimeMillis() and 0x00000000FFFFFFFFL) xor (uri.toString().hashCode().toLong() shl 16)
         Track(
@@ -269,10 +333,10 @@ class AudioLibraryRepository(private val context: Context) {
             artist = artist,
             album = album,
             durationMs = duration,
-            sampleRate = 44100,
+            sampleRate = sampleRate,
             bitDepth = if (ext == "FLAC" || ext == "WAV") 24 else 16,
             format = ext,
-            bitrateKbps = if (ext == "FLAC") 1411 else 320,
+            bitrateKbps = bitrate,
             uriString = uri.toString(),
             artworkUri = null
         )
@@ -298,41 +362,55 @@ class AudioLibraryRepository(private val context: Context) {
     }
 
     fun saveLibrary(tracks: List<Track>) {
-        try {
-            val jsonArray = JSONArray()
-            for (track in tracks) {
-                val obj = JSONObject().apply {
-                    put("id", track.id)
-                    put("title", track.title)
-                    put("artist", track.artist)
-                    put("album", track.album)
-                    put("durationMs", track.durationMs)
-                    put("sampleRate", track.sampleRate)
-                    put("bitDepth", track.bitDepth)
-                    put("format", track.format)
-                    put("bitrateKbps", track.bitrateKbps)
-                    put("uriString", track.uriString)
-                    put("artworkUri", track.artworkUri ?: "")
+        synchronized(repoLock) {
+            try {
+                val jsonArray = JSONArray()
+                for (track in tracks) {
+                    val obj = JSONObject().apply {
+                        put("id", track.id)
+                        put("title", track.title)
+                        put("artist", track.artist)
+                        put("album", track.album)
+                        put("durationMs", track.durationMs)
+                        put("sampleRate", track.sampleRate)
+                        put("bitDepth", track.bitDepth)
+                        put("format", track.format)
+                        put("bitrateKbps", track.bitrateKbps)
+                        put("uriString", track.uriString)
+                        put("artworkUri", track.artworkUri ?: "")
+                    }
+                    jsonArray.put(obj)
                 }
-                jsonArray.put(obj)
+                val fos = libraryAtomicFile.startWrite()
+                try {
+                    fos.write(jsonArray.toString().toByteArray(Charsets.UTF_8))
+                    libraryAtomicFile.finishWrite(fos)
+                } catch (e: Exception) {
+                    libraryAtomicFile.failWrite(fos)
+                    throw e
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
-            libraryFile.writeText(jsonArray.toString())
-        } catch (e: Exception) {
-            e.printStackTrace()
         }
     }
 
     fun loadLibrary(): List<Track> {
-        try {
-            val refWav = File(context.filesDir, "studio_acoustic_reference.wav")
-            if (refWav.exists()) refWav.delete()
-        } catch (_: Exception) {}
+        synchronized(repoLock) {
+            try {
+                val refWav = File(context.filesDir, "studio_acoustic_reference.wav")
+                if (refWav.exists()) refWav.delete()
+            } catch (_: Exception) {}
 
-        if (!libraryFile.exists()) return emptyList()
-        val list = mutableListOf<Track>()
-        try {
-            val text = libraryFile.readText()
-            val jsonArray = JSONArray(text)
+            if (!libraryFile.exists()) return emptyList()
+            val list = mutableListOf<Track>()
+            try {
+                val text = try {
+                    libraryAtomicFile.openRead().use { it.bufferedReader(Charsets.UTF_8).readText() }
+                } catch (_: Exception) {
+                    libraryFile.readText()
+                }
+                val jsonArray = JSONArray(text)
             for (i in 0 until jsonArray.length()) {
                 val obj = jsonArray.getJSONObject(i)
                 val artwork = obj.optString("artworkUri", "")
@@ -359,11 +437,12 @@ class AudioLibraryRepository(private val context: Context) {
                         artworkUri = if (artwork.isNotBlank()) artwork else null
                     )
                 )
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
+            return list
         }
-        return list
     }
 
     suspend fun savePlaylistsAsync(playlists: List<Playlist>) = withContext(Dispatchers.IO) {
@@ -371,23 +450,32 @@ class AudioLibraryRepository(private val context: Context) {
     }
 
     fun savePlaylists(playlists: List<Playlist>) {
-        try {
-            val jsonArray = JSONArray()
-            for (pl in playlists) {
-                val obj = JSONObject().apply {
-                    put("id", pl.id)
-                    put("name", pl.name)
-                    val tracksArray = JSONArray()
-                    for (tid in pl.trackIds) {
-                        tracksArray.put(tid)
+        synchronized(repoLock) {
+            try {
+                val jsonArray = JSONArray()
+                for (pl in playlists) {
+                    val obj = JSONObject().apply {
+                        put("id", pl.id)
+                        put("name", pl.name)
+                        val tracksArray = JSONArray()
+                        for (tid in pl.trackIds) {
+                            tracksArray.put(tid)
+                        }
+                        put("trackIds", tracksArray)
                     }
-                    put("trackIds", tracksArray)
+                    jsonArray.put(obj)
                 }
-                jsonArray.put(obj)
+                val fos = playlistsAtomicFile.startWrite()
+                try {
+                    fos.write(jsonArray.toString().toByteArray(Charsets.UTF_8))
+                    playlistsAtomicFile.finishWrite(fos)
+                } catch (e: Exception) {
+                    playlistsAtomicFile.failWrite(fos)
+                    throw e
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
-            playlistsFile.writeText(jsonArray.toString())
-        } catch (e: Exception) {
-            e.printStackTrace()
         }
     }
 
@@ -395,27 +483,33 @@ class AudioLibraryRepository(private val context: Context) {
         val list = mutableListOf<Playlist>()
         list.add(Playlist("favorites", "Favorites", emptyList()))
 
-        if (!playlistsFile.exists()) return list
-        try {
-            val text = playlistsFile.readText()
-            val jsonArray = JSONArray(text)
-            val customList = mutableListOf<Playlist>()
-            for (i in 0 until jsonArray.length()) {
-                val obj = jsonArray.getJSONObject(i)
-                val id = obj.getString("id")
-                val name = obj.getString("name")
-                val tArr = obj.getJSONArray("trackIds")
-                val tIds = mutableListOf<Long>()
-                for (j in 0 until tArr.length()) {
-                    tIds.add(tArr.getLong(j))
+        synchronized(repoLock) {
+            if (!playlistsFile.exists()) return list
+            try {
+                val text = try {
+                    playlistsAtomicFile.openRead().use { it.bufferedReader(Charsets.UTF_8).readText() }
+                } catch (_: Exception) {
+                    playlistsFile.readText()
                 }
-                customList.add(Playlist(id, name, tIds))
+                val jsonArray = JSONArray(text)
+                val customList = mutableListOf<Playlist>()
+                for (i in 0 until jsonArray.length()) {
+                    val obj = jsonArray.getJSONObject(i)
+                    val id = obj.getString("id")
+                    val name = obj.getString("name")
+                    val tArr = obj.getJSONArray("trackIds")
+                    val tIds = mutableListOf<Long>()
+                    for (j in 0 until tArr.length()) {
+                        tIds.add(tArr.getLong(j))
+                    }
+                    customList.add(Playlist(id, name, tIds))
+                }
+                if (customList.isNotEmpty()) {
+                    return customList
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
-            if (customList.isNotEmpty()) {
-                return customList
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
         }
         return list
     }
@@ -425,61 +519,76 @@ class AudioLibraryRepository(private val context: Context) {
     }
 
     fun saveQueues(queues: List<StudioQueue>) {
-        try {
-            val arr = JSONArray()
-            for (q in queues) {
-                val obj = JSONObject().apply {
-                    put("id", q.id)
-                    put("name", q.name)
-                    put("currentIndex", q.currentIndex)
-                    put("positionMs", q.positionMs)
-                    put("isShuffle", q.isShuffle)
-                    val tArr = JSONArray()
-                    for (tid in q.trackIds) {
-                        tArr.put(tid)
-                    }
-                    put("trackIds", tArr)
-                }
-                arr.put(obj)
-            }
-            queuesFile.writeText(arr.toString())
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
-
-    fun loadQueues(defaultTracks: List<Track>): List<StudioQueue> {
-        val list = mutableListOf<StudioQueue>()
-        if (queuesFile.exists()) {
+        synchronized(repoLock) {
             try {
-                val text = queuesFile.readText()
-                val arr = JSONArray(text)
-                for (i in 0 until arr.length()) {
-                    val obj = arr.getJSONObject(i)
-                    val id = obj.getString("id")
-                    val name = obj.getString("name")
-                    val currentIndex = obj.optInt("currentIndex", 0)
-                    val positionMs = obj.optLong("positionMs", 0L)
-                    val isShuffle = obj.optBoolean("isShuffle", false)
-                    val tArr = obj.getJSONArray("trackIds")
-                    val tIds = mutableListOf<Long>()
-                    for (j in 0 until tArr.length()) {
-                        tIds.add(tArr.getLong(j))
+                val arr = JSONArray()
+                for (q in queues) {
+                    val obj = JSONObject().apply {
+                        put("id", q.id)
+                        put("name", q.name)
+                        put("currentIndex", q.currentIndex)
+                        put("positionMs", q.positionMs)
+                        put("isShuffle", q.isShuffle)
+                        val tArr = JSONArray()
+                        for (tid in q.trackIds) {
+                            tArr.put(tid)
+                        }
+                        put("trackIds", tArr)
                     }
-                    list.add(StudioQueue(id, name, tIds, currentIndex, positionMs, isShuffle))
+                    arr.put(obj)
+                }
+                val fos = queuesAtomicFile.startWrite()
+                try {
+                    fos.write(arr.toString().toByteArray(Charsets.UTF_8))
+                    queuesAtomicFile.finishWrite(fos)
+                } catch (e: Exception) {
+                    queuesAtomicFile.failWrite(fos)
+                    throw e
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
             }
         }
+    }
 
-        if (list.isEmpty()) {
-            val initialIds = defaultTracks.map { it.id }
-            list.add(StudioQueue("queue_1", "Queue 1 (Main)", initialIds))
-            list.add(StudioQueue("queue_2", "Queue 2 (Focus / Chill)", emptyList()))
-            list.add(StudioQueue("queue_3", "Queue 3 (Hi-Res Masters)", emptyList()))
+    fun loadQueues(defaultTracks: List<Track>): List<StudioQueue> {
+        val list = mutableListOf<StudioQueue>()
+        synchronized(repoLock) {
+            if (queuesFile.exists()) {
+                try {
+                    val text = try {
+                        queuesAtomicFile.openRead().use { it.bufferedReader(Charsets.UTF_8).readText() }
+                    } catch (_: Exception) {
+                        queuesFile.readText()
+                    }
+                    val arr = JSONArray(text)
+                    for (i in 0 until arr.length()) {
+                        val obj = arr.getJSONObject(i)
+                        val id = obj.getString("id")
+                        val name = obj.getString("name")
+                        val currentIndex = obj.optInt("currentIndex", 0)
+                        val positionMs = obj.optLong("positionMs", 0L)
+                        val isShuffle = obj.optBoolean("isShuffle", false)
+                        val tArr = obj.getJSONArray("trackIds")
+                        val tIds = mutableListOf<Long>()
+                        for (j in 0 until tArr.length()) {
+                            tIds.add(tArr.getLong(j))
+                        }
+                        list.add(StudioQueue(id, name, tIds, currentIndex, positionMs, isShuffle))
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+
+            if (list.isEmpty()) {
+                val initialIds = defaultTracks.map { it.id }
+                list.add(StudioQueue("queue_1", "Queue 1 (Main)", initialIds))
+                list.add(StudioQueue("queue_2", "Queue 2 (Focus / Chill)", emptyList()))
+                list.add(StudioQueue("queue_3", "Queue 3 (Hi-Res Masters)", emptyList()))
+            }
+            return list
         }
-        return list
     }
 
     suspend fun saveBookmarksAsync(bookmarks: List<TrackBookmark>) = withContext(Dispatchers.IO) {
@@ -487,45 +596,61 @@ class AudioLibraryRepository(private val context: Context) {
     }
 
     fun saveBookmarks(bookmarks: List<TrackBookmark>) {
-        try {
-            val arr = JSONArray()
-            for (b in bookmarks) {
-                val obj = JSONObject().apply {
-                    put("id", b.id)
-                    put("trackId", b.trackId)
-                    put("timestampMs", b.timestampMs)
-                    put("note", b.note)
-                    put("createdAt", b.createdAt)
+        synchronized(repoLock) {
+            try {
+                val arr = JSONArray()
+                for (b in bookmarks) {
+                    val obj = JSONObject().apply {
+                        put("id", b.id)
+                        put("trackId", b.trackId)
+                        put("timestampMs", b.timestampMs)
+                        put("note", b.note)
+                        put("createdAt", b.createdAt)
+                    }
+                    arr.put(obj)
                 }
-                arr.put(obj)
+                val fos = bookmarksAtomicFile.startWrite()
+                try {
+                    fos.write(arr.toString().toByteArray(Charsets.UTF_8))
+                    bookmarksAtomicFile.finishWrite(fos)
+                } catch (e: Exception) {
+                    bookmarksAtomicFile.failWrite(fos)
+                    throw e
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
-            bookmarksFile.writeText(arr.toString())
-        } catch (e: Exception) {
-            e.printStackTrace()
         }
     }
 
     fun loadBookmarks(): List<TrackBookmark> {
         val list = mutableListOf<TrackBookmark>()
-        if (!bookmarksFile.exists()) return list
-        try {
-            val arr = JSONArray(bookmarksFile.readText())
-            for (i in 0 until arr.length()) {
-                val obj = arr.getJSONObject(i)
-                list.add(
-                    TrackBookmark(
-                        id = obj.getString("id"),
-                        trackId = obj.getLong("trackId"),
-                        timestampMs = obj.getLong("timestampMs"),
-                        note = obj.getString("note"),
-                        createdAt = obj.optLong("createdAt", System.currentTimeMillis())
+        synchronized(repoLock) {
+            if (!bookmarksFile.exists()) return list
+            try {
+                val text = try {
+                    bookmarksAtomicFile.openRead().use { it.bufferedReader(Charsets.UTF_8).readText() }
+                } catch (_: Exception) {
+                    bookmarksFile.readText()
+                }
+                val arr = JSONArray(text)
+                for (i in 0 until arr.length()) {
+                    val obj = arr.getJSONObject(i)
+                    list.add(
+                        TrackBookmark(
+                            id = obj.getString("id"),
+                            trackId = obj.getLong("trackId"),
+                            timestampMs = obj.getLong("timestampMs"),
+                            note = obj.getString("note"),
+                            createdAt = obj.optLong("createdAt", System.currentTimeMillis())
+                        )
                     )
-                )
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
+            return list
         }
-        return list
     }
 
     fun extractFolders(tracks: List<Track>): List<MusicFolder> {

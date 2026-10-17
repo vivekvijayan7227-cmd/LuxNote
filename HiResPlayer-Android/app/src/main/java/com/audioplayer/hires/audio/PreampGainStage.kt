@@ -20,9 +20,17 @@ class PreampGainStage {
     fun getGainDb(): Float = gainDb
     fun getLinearGain(): Float = linearGain
 
-    fun hasClipped(): Boolean = clippingOccurred
+    private var lastClipTimestampMs: Long = 0L
+    private val CLIP_HOLD_DURATION_MS = 1500L
+
+    fun hasClipped(): Boolean {
+        val now = System.currentTimeMillis()
+        return (now - lastClipTimestampMs) < CLIP_HOLD_DURATION_MS
+    }
+
     fun resetClipping() {
-        clippingOccurred = false
+        lastClipTimestampMs = 0L
+        peakLevel = 0.0f
     }
 
     fun getPeakLevel(): Float = peakLevel
@@ -39,7 +47,7 @@ class PreampGainStage {
         // Soft-knee limiter: if sample exceeds 0.95, apply smooth cubic soft-clipping
         // to prevent harsh DAC intersample overload
         if (maxAmp > 0.95f) {
-            clippingOccurred = true
+            lastClipTimestampMs = System.currentTimeMillis()
             l = softClip(l)
             r = softClip(r)
         }

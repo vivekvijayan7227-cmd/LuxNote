@@ -86,27 +86,20 @@ class CenterChannelProcessor {
         var side = 0.5f * (inL - inR)
 
         if (mode == MODE_VOCAL_FOCUS) {
-            // Mode 1: Vocal Focus
-            val midFrame = floatArrayOf(mid, mid)
-            vocalBoost.processFrame(midFrame, 0)
-            vocalShelf.processFrame(midFrame, 0)
+            // Mode 1: Vocal Focus (Formant boost + high-shelf air, zero allocation)
+            val midBoosted = vocalBoost.processMonoSample(mid.toDouble())
+            val midShelved = vocalShelf.processMonoSample(midBoosted)
 
-            val midOut = midFrame[0] * (1.0f + 0.35f * amount)
+            val midOut = (midShelved * (1.0 + 0.35 * amount)).toFloat()
             val sideAtten = max(0.20f, 1.0f - (amount * 0.65f))
             side *= sideAtten
 
             samples[offset] = midOut + side
             samples[offset + 1] = midOut - side
         } else if (mode == MODE_INSTRUMENTAL_FOCUS) {
-            // Mode 2: Instrumental Focus
-            // Decompose mid channel: extract solid bass (< 140 Hz) and crisp air (> 6000 Hz)
-            val bassFrame = floatArrayOf(mid, mid)
-            lpBass.processFrame(bassFrame, 0)
-            val subBass = bassFrame[0]
-
-            val airFrame = floatArrayOf(mid, mid)
-            hpAir.processFrame(airFrame, 0)
-            val air = airFrame[0]
+            // Mode 2: Instrumental Focus (Decompose mid channel without array allocations)
+            val subBass = lpBass.processMonoSample(mid.toDouble()).toFloat()
+            val air = hpAir.processMonoSample(mid.toDouble()).toFloat()
 
             // The vocal formant band is mid minus sub-bass and air
             val vocalBand = mid - subBass - air

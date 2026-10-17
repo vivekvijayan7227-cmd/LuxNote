@@ -17,6 +17,7 @@ import com.audioplayer.hires.data.DiagnosticsReport
 import com.audioplayer.hires.lyrics.LrcParser
 import com.audioplayer.hires.model.*
 import com.audioplayer.hires.playback.HiResAudioService
+import com.audioplayer.hires.playback.PlaybackManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -42,8 +43,9 @@ enum class StudioScreen {
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     val repository = AudioLibraryRepository(application)
-    val dspPipeline = StudioDspPipeline()
-    val audioPlayer = AudioTrackPlayer(application, dspPipeline)
+    val playbackManager = PlaybackManager.getInstance(application)
+    val dspPipeline get() = playbackManager.dspPipeline
+    val audioPlayer get() = playbackManager.audioPlayer
     val usbInspector = UsbAudioInspector(application)
 
     // Navigation Stack
@@ -72,11 +74,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _queues = MutableStateFlow<List<StudioQueue>>(emptyList())
     val queues: StateFlow<List<StudioQueue>> = _queues.asStateFlow()
 
-    private val _activeQueueId = MutableStateFlow("queue_1")
-    val activeQueueId: StateFlow<String> = _activeQueueId.asStateFlow()
-
-    private val _activeQueue = MutableStateFlow<List<Track>>(emptyList())
-    val activeQueue: StateFlow<List<Track>> = _activeQueue.asStateFlow()
+    val activeQueueId: StateFlow<String> get() = playbackManager.activeQueueId
+    val activeQueue: StateFlow<List<Track>> get() = playbackManager.activeQueue
 
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
@@ -103,88 +102,44 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val sleepTimerEndOfTrack: StateFlow<Boolean> = _sleepTimerEndOfTrack.asStateFlow()
     private var sleepTimerJob: Job? = null
 
-    // Playback Speed
-    private val _playbackSpeed = MutableStateFlow(1.0f)
-    val playbackSpeed: StateFlow<Float> = _playbackSpeed.asStateFlow()
-
-    // Playback Transport Options
-    private val _shuffleEnabled = MutableStateFlow(false)
-    val shuffleEnabled: StateFlow<Boolean> = _shuffleEnabled.asStateFlow()
-
-    private val _repeatMode = MutableStateFlow(RepeatMode.ALL)
-    val repeatMode: StateFlow<RepeatMode> = _repeatMode.asStateFlow()
+    // Playback Speed & Transport
+    val playbackSpeed: StateFlow<Float> get() = playbackManager.playbackSpeed
+    val shuffleEnabled: StateFlow<Boolean> get() = playbackManager.shuffleEnabled
+    val repeatMode: StateFlow<RepeatMode> get() = playbackManager.repeatMode
 
     // Playback State
-    private val _currentTrack = MutableStateFlow<Track?>(null)
-    val currentTrack: StateFlow<Track?> = _currentTrack.asStateFlow()
-
-    private val _playerStatus = MutableStateFlow(PlayerStatus.STOPPED)
-    val playerStatus: StateFlow<PlayerStatus> = _playerStatus.asStateFlow()
-
-    private val _positionMs = MutableStateFlow(0L)
-    val positionMs: StateFlow<Long> = _positionMs.asStateFlow()
+    val currentTrack: StateFlow<Track?> get() = playbackManager.currentTrack
+    val playerStatus: StateFlow<PlayerStatus> get() = playbackManager.playerStatus
+    val positionMs: StateFlow<Long> get() = playbackManager.positionMs
 
     // Hardware USB DAC & Bit-Perfect Info
     private val _usbDacInfo = MutableStateFlow(usbInspector.inspectAudioHardware())
     val usbDacInfo: StateFlow<UsbDacInfo> = _usbDacInfo.asStateFlow()
 
-    // DSP States
-    private val _dspEnabled = MutableStateFlow(false)
-    val dspEnabled: StateFlow<Boolean> = _dspEnabled.asStateFlow()
+    // DSP States & Truthful Signal Path (Finding 16)
+    val dspEnabled: StateFlow<Boolean> get() = playbackManager.dspEnabled
+    val isBitPerfect: StateFlow<Boolean> get() = playbackManager.isBitPerfect
+    val signalPathDescription: StateFlow<String> get() = playbackManager.signalPathDescription
+    val preampGainDb: StateFlow<Float> get() = playbackManager.preampGainDb
+    val hasClipped: StateFlow<Boolean> get() = playbackManager.hasClipped
+    val graphicGains: StateFlow<FloatArray> get() = playbackManager.graphicGains
+    val vocalFocusMode: StateFlow<Int> get() = playbackManager.vocalFocusMode
+    val vocalFocusAmount: StateFlow<Float> get() = playbackManager.vocalFocusAmount
 
-    private val _isBitPerfect = MutableStateFlow(true)
-    val isBitPerfect: StateFlow<Boolean> = _isBitPerfect.asStateFlow()
-
-    private val _preampGainDb = MutableStateFlow(0.0f)
-    val preampGainDb: StateFlow<Float> = _preampGainDb.asStateFlow()
-
-    private val _hasClipped = MutableStateFlow(false)
-    val hasClipped: StateFlow<Boolean> = _hasClipped.asStateFlow()
-
-    // Graphic EQ (10 bands)
-    private val _graphicGains = MutableStateFlow(FloatArray(10) { 0f })
-    val graphicGains: StateFlow<FloatArray> = _graphicGains.asStateFlow()
-
-    // Vocal Studio State (100% Offline Non-AI Mid/Side DSP)
-    private val _vocalFocusMode = MutableStateFlow(CenterChannelProcessor.MODE_OFF)
-    val vocalFocusMode: StateFlow<Int> = _vocalFocusMode.asStateFlow()
-
-    private val _vocalFocusAmount = MutableStateFlow(0.0f)
-    val vocalFocusAmount: StateFlow<Float> = _vocalFocusAmount.asStateFlow()
+    // Settings (Finding 10)
+    val isGaplessEnabled: StateFlow<Boolean> get() = playbackManager.isGaplessEnabled
+    val isAutoResumeEnabled: StateFlow<Boolean> get() = playbackManager.isAutoResumeEnabled
 
     // Real-Time Spectrum Visualizer (64 bands)
     private val _fftBands = MutableStateFlow(FloatArray(64) { 0.05f })
     val fftBands: StateFlow<FloatArray> = _fftBands.asStateFlow()
 
-    private var currentQueueIndex = 0
-
     init {
         screenStack.push(StudioScreen.LIBRARY)
 
-        audioPlayer.onStatusChanged = { status ->
-            _playerStatus.value = status
-            _currentTrack.value = audioPlayer.currentTrack
-            syncForegroundService()
-        }
-        audioPlayer.onPositionChanged = { pos ->
-            _positionMs.value = pos
-        }
-        audioPlayer.onTrackCompleted = {
-            handleTrackCompleted()
-        }
-
-        // Notification / Media Button Actions
-        HiResAudioService.onTransportAction = { action ->
-            when {
-                action == HiResAudioService.ACTION_PLAY -> resumePlayback()
-                action == HiResAudioService.ACTION_PAUSE -> pausePlayback()
-                action == HiResAudioService.ACTION_NEXT -> playNext()
-                action == HiResAudioService.ACTION_PREV -> playPrevious()
-                action == HiResAudioService.ACTION_STOP -> stop()
-                action.startsWith("SEEK:") -> {
-                    val pos = action.substringAfter("SEEK:").toLongOrNull() ?: 0L
-                    seekTo(pos)
-                }
+        viewModelScope.launch {
+            playbackManager.currentTrack.collect { track ->
+                loadLyricsForTrack(track)
             }
         }
 
@@ -205,17 +160,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val trackMap = initialTracks.associateBy { it.id }
             val qTracks = firstQ.trackIds.mapNotNull { trackMap[it] }.ifEmpty { initialTracks }
             val initialIndex = if (qTracks.isNotEmpty()) firstQ.currentIndex.coerceIn(0, qTracks.size - 1) else 0
-            val initialTrack = qTracks.getOrNull(initialIndex) ?: initialTracks.firstOrNull()
 
             withContext(Dispatchers.Main) {
                 _libraryTracks.value = initialTracks
                 _folders.value = repository.extractFolders(initialTracks)
                 _queues.value = loadedQueues
-                _activeQueueId.value = firstQ.id
-                _activeQueue.value = qTracks
-                currentQueueIndex = initialIndex
-                _currentTrack.value = initialTrack
-                loadLyricsForTrack(initialTrack)
+                if (playbackManager.activeQueue.value.isEmpty()) {
+                    playbackManager.setActiveQueue(firstQ.id, qTracks, initialIndex)
+                }
                 registerRealTimeObserver()
                 scanDeviceMusic(showIndicator = false)
                 refreshDiagnostics()
@@ -225,9 +177,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // Dynamic 60 FPS Spectrum Polling Loop
         viewModelScope.launch {
             while (isActive) {
-                if (_playerStatus.value == PlayerStatus.PLAYING) {
+                if (playbackManager.playerStatus.value == PlayerStatus.PLAYING) {
                     _fftBands.value = dspPipeline.spectrumAnalyzer.computeBands()
-                    _hasClipped.value = dspPipeline.preamp.hasClipped()
+                    playbackManager.pollSpectrumAndClipping()
                 } else {
                     val current = _fftBands.value
                     var hasEnergy = false
@@ -288,46 +240,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun syncForegroundService() {
-        try {
-            val context = getApplication<Application>()
-            val isPlaying = _playerStatus.value == PlayerStatus.PLAYING
-            val track = _currentTrack.value
-
-            val intent = Intent(context, HiResAudioService::class.java).apply {
-                action = HiResAudioService.ACTION_SYNC_STATE
-                if (track != null) {
-                    putExtra("EXTRA_TRACK_ID", track.id)
-                    putExtra("EXTRA_TITLE", track.title)
-                    putExtra("EXTRA_ARTIST", track.artist)
-                    putExtra("EXTRA_ALBUM", track.album)
-                    putExtra("EXTRA_DURATION", track.durationMs)
-                    putExtra("EXTRA_FORMAT", track.format)
-                    putExtra("EXTRA_PLAYING", isPlaying)
-                    putExtra("EXTRA_POSITION", _positionMs.value)
-                }
-            }
-
-            if (isPlaying) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    context.startForegroundService(intent)
-                } else {
-                    context.startService(intent)
-                }
-            } else {
-                context.startService(intent)
-            }
-
-            HiResAudioService.instance?.updatePlaybackState(
-                track,
-                _playerStatus.value,
-                _positionMs.value
-            )
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
-
     // Navigation
     fun setScreen(screen: StudioScreen) {
         if (_currentScreen.value != screen) {
@@ -352,11 +264,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // Studio Multiple Queues Management
     fun switchQueue(queueId: String) {
-        if (_activeQueueId.value == queueId) return
+        if (activeQueueId.value == queueId) return
 
         val updatedQueues = _queues.value.map { q ->
-            if (q.id == _activeQueueId.value) {
-                q.copy(currentIndex = currentQueueIndex, positionMs = _positionMs.value, isShuffle = _shuffleEnabled.value)
+            if (q.id == activeQueueId.value) {
+                q.copy(currentIndex = playbackManager.currentQueueIndex.value, positionMs = positionMs.value, isShuffle = shuffleEnabled.value)
             } else q
         }
 
@@ -365,21 +277,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             repository.saveQueuesAsync(updatedQueues)
         }
-        _activeQueueId.value = queueId
 
         val trackMap = _libraryTracks.value.associateBy { it.id }
         val targetTracks = target.trackIds.mapNotNull { trackMap[it] }
-        _activeQueue.value = targetTracks
-        _shuffleEnabled.value = target.isShuffle
+        val targetIndex = if (targetTracks.isNotEmpty()) target.currentIndex.coerceIn(0, targetTracks.size - 1) else 0
+
+        playbackManager.setActiveQueue(queueId, targetTracks, targetIndex)
+        playbackManager.setShuffle(target.isShuffle)
 
         if (targetTracks.isNotEmpty()) {
-            currentQueueIndex = target.currentIndex.coerceIn(0, targetTracks.size - 1)
-            val trackToPlay = targetTracks[currentQueueIndex]
-            _currentTrack.value = trackToPlay
-            loadLyricsForTrack(trackToPlay)
-            audioPlayer.play(trackToPlay)
+            val trackToPlay = targetTracks[targetIndex]
+            playbackManager.playTrack(trackToPlay, targetTracks, targetIndex)
             if (target.positionMs > 0) {
-                audioPlayer.seekTo(target.positionMs)
+                playbackManager.seekTo(target.positionMs)
             }
         }
     }
@@ -413,8 +323,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             repository.saveQueuesAsync(updated)
         }
-        if (_activeQueueId.value == queueId) {
-            _activeQueue.value = emptyList()
+        if (activeQueueId.value == queueId) {
+            playbackManager.setActiveQueue(queueId, emptyList(), 0)
             stop()
         }
     }
@@ -429,19 +339,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             repository.saveQueuesAsync(updated)
         }
-        if (_activeQueueId.value == queueId) {
-            _activeQueue.value = _activeQueue.value + track
+        if (activeQueueId.value == queueId) {
+            playbackManager.setActiveQueue(queueId, activeQueue.value + track, playbackManager.currentQueueIndex.value)
         }
     }
 
     fun addTrackNextInQueue(track: Track) {
-        val current = _activeQueue.value.toMutableList()
-        val insertIdx = (currentQueueIndex + 1).coerceAtMost(current.size)
+        val current = activeQueue.value.toMutableList()
+        val insertIdx = (playbackManager.currentQueueIndex.value + 1).coerceAtMost(current.size)
         current.add(insertIdx, track)
-        _activeQueue.value = current
+        playbackManager.setActiveQueue(activeQueueId.value, current, playbackManager.currentQueueIndex.value)
 
         val updated = _queues.value.map { q ->
-            if (q.id == _activeQueueId.value) {
+            if (q.id == activeQueueId.value) {
                 val list = q.trackIds.toMutableList()
                 val idx = (q.currentIndex + 1).coerceAtMost(list.size)
                 list.add(idx, track.id)
@@ -465,7 +375,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // High-Speed Non-Blocking Real-Time Scanning & Direct Storage Discovery
+    // High-Speed Non-Blocking Real-Time Scanning & Differential Reconciliation (Finding 09)
     fun scanDeviceMusic(showIndicator: Boolean = false) {
         viewModelScope.launch(Dispatchers.IO) {
             if (showIndicator) {
@@ -476,34 +386,77 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             val discoveredTracks = repository.scanAllDeviceMusicAsync()
+            val discoveredMap = discoveredTracks.associateBy { it.id }
             val currentTracks = _libraryTracks.value
-            val existingIds = currentTracks.map { it.id }.toSet()
-            val merged = currentTracks.toMutableList()
-            for (t in discoveredTracks) {
-                if (t.id !in existingIds) {
-                    merged.add(t)
+            val context = getApplication<Application>()
+
+            val validTracks = mutableListOf<Track>()
+            val validIds = mutableSetOf<Long>()
+
+            // 1. Reconcile existing tracks against current storage state
+            for (t in currentTracks) {
+                val isMediaStore = t.uriString.startsWith("content://media/")
+                if (isMediaStore) {
+                    if (t.id in discoveredMap) {
+                        validTracks.add(discoveredMap[t.id] ?: t)
+                        validIds.add(t.id)
+                    } // Missing from MediaStore => Pruned!
+                } else {
+                    // Check SAF / direct file accessibility
+                    val accessible = try {
+                        val uri = Uri.parse(t.uriString)
+                        if (uri.scheme == "file") {
+                            java.io.File(uri.path ?: "").exists()
+                        } else {
+                            context.contentResolver.openFileDescriptor(uri, "r")?.use { true } ?: false
+                        }
+                    } catch (_: Exception) {
+                        false
+                    }
+                    if (accessible) {
+                        validTracks.add(t)
+                        validIds.add(t.id)
+                    } // Inaccessible => Pruned!
                 }
             }
 
-            val finalTracks = if (merged.isEmpty()) discoveredTracks else merged
-
-            if (finalTracks.isNotEmpty()) {
-                repository.saveLibraryAsync(finalTracks)
-                withContext(Dispatchers.Main) {
-                    _libraryTracks.value = finalTracks
-                    _folders.value = repository.extractFolders(finalTracks)
-                    if (_activeQueue.value.isEmpty()) {
-                        _activeQueue.value = finalTracks
-                    }
-                    if (_currentTrack.value == null && finalTracks.isNotEmpty()) {
-                        _currentTrack.value = finalTracks[0]
-                        loadLyricsForTrack(finalTracks[0])
-                    }
+            // 2. Add newly discovered tracks
+            for (dt in discoveredTracks) {
+                if (dt.id !in validIds) {
+                    validTracks.add(dt)
+                    validIds.add(dt.id)
                 }
             }
 
-            if (showIndicator) {
-                withContext(Dispatchers.Main) {
+            val finalTracks = if (validTracks.isEmpty()) discoveredTracks else validTracks
+            repository.saveLibraryAsync(finalTracks)
+
+            // 3. Prune broken references in playlists and queues
+            val prunedTrackIds = currentTracks.map { it.id }.toSet() - validIds
+            if (prunedTrackIds.isNotEmpty()) {
+                val updatedQueues = _queues.value.map { q ->
+                    q.copy(trackIds = q.trackIds.filter { it !in prunedTrackIds })
+                }
+                _queues.value = updatedQueues
+                repository.saveQueuesAsync(updatedQueues)
+
+                val updatedPlaylists = _playlists.value.map { pl ->
+                    pl.copy(trackIds = pl.trackIds.filter { it !in prunedTrackIds })
+                }
+                _playlists.value = updatedPlaylists
+                repository.savePlaylistsAsync(updatedPlaylists)
+            }
+
+            withContext(Dispatchers.Main) {
+                _libraryTracks.value = finalTracks
+                _folders.value = repository.extractFolders(finalTracks)
+                if (playbackManager.activeQueue.value.isEmpty() && finalTracks.isNotEmpty()) {
+                    playbackManager.setActiveQueue("queue_1", finalTracks, 0)
+                }
+                if (playbackManager.currentTrack.value == null && finalTracks.isNotEmpty()) {
+                    loadLyricsForTrack(finalTracks[0])
+                }
+                if (showIndicator) {
                     _isImporting.value = false
                     _importProgress.value = ""
                 }
@@ -544,11 +497,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 withContext(Dispatchers.Main) {
                     _libraryTracks.value = merged
                     _folders.value = repository.extractFolders(merged)
-                    if (_activeQueue.value.isEmpty()) {
-                        _activeQueue.value = merged
+                    if (playbackManager.activeQueue.value.isEmpty()) {
+                        playbackManager.setActiveQueue("queue_1", merged, 0)
                     }
-                    if (_currentTrack.value == null || _currentTrack.value?.uriString?.isBlank() == true) {
-                        _currentTrack.value = newTracks[0]
+                    if (playbackManager.currentTrack.value == null && newTracks.isNotEmpty()) {
                         loadLyricsForTrack(newTracks[0])
                     }
                 }
@@ -562,7 +514,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val updated = _libraryTracks.value.filter { it.id != trackId }
         _libraryTracks.value = updated
         _folders.value = repository.extractFolders(updated)
-        _activeQueue.value = _activeQueue.value.filter { it.id != trackId }
 
         viewModelScope.launch(Dispatchers.IO) {
             repository.saveLibraryAsync(updated)
@@ -584,10 +535,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             repository.saveQueuesAsync(updatedQ)
         }
 
-        if (_currentTrack.value?.id == trackId) {
+        if (playbackManager.activeQueue.value.any { it.id == trackId }) {
+            val q = playbackManager.activeQueue.value.filter { it.id != trackId }
+            playbackManager.setActiveQueue(playbackManager.activeQueueId.value, q, playbackManager.currentQueueIndex.value)
+        }
+
+        if (currentTrack.value?.id == trackId) {
             stop()
-            _currentTrack.value = updated.firstOrNull()
-            loadLyricsForTrack(_currentTrack.value)
         }
     }
 
@@ -742,7 +696,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun getBookmarksForCurrentTrack(): List<TrackBookmark> {
-        val currentId = _currentTrack.value?.id ?: return emptyList()
+        val currentId = currentTrack.value?.id ?: return emptyList()
         return _bookmarks.value.filter { it.trackId == currentId }.sortedBy { it.timestampMs }
     }
 
@@ -785,206 +739,76 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // Playback Controls
     fun playQueue(queue: List<Track>, startIndex: Int = 0) {
         if (queue.isEmpty()) return
-        _activeQueue.value = queue
-        currentQueueIndex = startIndex.coerceIn(0, queue.size - 1)
-        val track = queue[currentQueueIndex]
-        _currentTrack.value = track
-        loadLyricsForTrack(track)
-        audioPlayer.play(track)
-        updateBitPerfectStatus()
-        syncForegroundService()
+        playbackManager.playQueue(queue, startIndex)
     }
 
     fun playTrack(track: Track) {
-        val queue = _activeQueue.value
-        val idx = queue.indexOfFirst { it.id == track.id }
-        if (idx >= 0) {
-            currentQueueIndex = idx
+        val q = activeQueue.value
+        if (q.any { it.id == track.id }) {
+            playbackManager.playTrack(track)
         } else {
-            _activeQueue.value = _libraryTracks.value
-            currentQueueIndex = _libraryTracks.value.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
+            playbackManager.playTrack(track, _libraryTracks.value)
         }
-        _currentTrack.value = track
-        loadLyricsForTrack(track)
-        audioPlayer.play(track)
-        updateBitPerfectStatus()
-        syncForegroundService()
     }
 
     fun togglePlayPause() {
-        if (_playerStatus.value == PlayerStatus.PLAYING) {
+        if (playerStatus.value == PlayerStatus.PLAYING) {
             pausePlayback()
         } else {
             resumePlayback()
         }
     }
 
-    fun pausePlayback() {
-        audioPlayer.pause()
-        syncForegroundService()
-    }
+    fun pausePlayback() = playbackManager.pausePlayback()
 
-    fun resumePlayback() {
-        if (_playerStatus.value == PlayerStatus.PAUSED) {
-            audioPlayer.resume()
-        } else {
-            val track = _currentTrack.value ?: _libraryTracks.value.firstOrNull()
-            if (track != null) {
-                playTrack(track)
-            }
-        }
-        syncForegroundService()
-    }
+    fun resumePlayback() = playbackManager.resumePlayback()
 
-    fun playNext() {
-        val queue = _activeQueue.value
-        if (queue.isEmpty()) return
+    fun playNext() = playbackManager.playNext()
 
-        if (_shuffleEnabled.value && queue.size > 1) {
-            var nextIdx: Int
-            do {
-                nextIdx = (0 until queue.size).random()
-            } while (nextIdx == currentQueueIndex)
-            currentQueueIndex = nextIdx
-        } else {
-            currentQueueIndex = (currentQueueIndex + 1) % queue.size
-        }
+    fun playPrevious() = playbackManager.playPrevious()
 
-        val nextTrack = queue[currentQueueIndex]
-        playTrack(nextTrack)
-    }
-
-    fun playPrevious() {
-        val queue = _activeQueue.value
-        if (queue.isEmpty()) return
-
-        if (_positionMs.value > 3000L) {
-            audioPlayer.seekTo(0L)
-            return
-        }
-
-        currentQueueIndex = if (currentQueueIndex - 1 < 0) queue.size - 1 else currentQueueIndex - 1
-        val prevTrack = queue[currentQueueIndex]
-        playTrack(prevTrack)
-    }
-
-    private fun handleTrackCompleted() {
-        if (_sleepTimerEndOfTrack.value) {
-            cancelSleepTimer()
-            stop()
-            return
-        }
-
-        when (_repeatMode.value) {
-            RepeatMode.ONE -> {
-                val current = _currentTrack.value
-                if (current != null) {
-                    audioPlayer.play(current)
-                }
-            }
-            RepeatMode.ALL -> {
-                playNext()
-            }
-            RepeatMode.OFF -> {
-                val queue = _activeQueue.value
-                if (currentQueueIndex < queue.size - 1) {
-                    playNext()
-                } else {
-                    stop()
-                }
-            }
-        }
-    }
-
-    fun toggleShuffle() {
-        _shuffleEnabled.value = !_shuffleEnabled.value
-    }
+    fun toggleShuffle() = playbackManager.setShuffle(!shuffleEnabled.value)
 
     fun cycleRepeatMode() {
-        _repeatMode.value = when (_repeatMode.value) {
+        val nextMode = when (repeatMode.value) {
             RepeatMode.OFF -> RepeatMode.ALL
             RepeatMode.ALL -> RepeatMode.ONE
             RepeatMode.ONE -> RepeatMode.OFF
         }
+        playbackManager.setRepeatMode(nextMode)
     }
 
     fun toggleRepeatMode() = cycleRepeatMode()
 
-    fun setPlaybackSpeed(speed: Float) {
-        _playbackSpeed.value = speed
-        audioPlayer.setSpeed(speed)
-    }
+    fun setPlaybackSpeed(speed: Float) = playbackManager.setPlaybackSpeed(speed)
 
-    fun stop() {
-        audioPlayer.stop()
-        syncForegroundService()
-    }
+    fun stop() = playbackManager.stopPlayback()
 
-    fun seekTo(posMs: Long) {
-        audioPlayer.seekTo(posMs)
-        syncForegroundService()
-    }
+    fun seekTo(posMs: Long) = playbackManager.seekTo(posMs)
 
     // DSP Controls
-    fun toggleDspEnabled(enabled: Boolean) {
-        dspPipeline.dspEnabled = enabled
-        _dspEnabled.value = enabled
-        updateBitPerfectStatus()
-    }
+    fun toggleDspEnabled(enabled: Boolean) = playbackManager.toggleDspEnabled(enabled)
 
-    fun setPreampGain(gainDb: Float) {
-        dspPipeline.preamp.setGainDb(gainDb)
-        dspPipeline.nativeEngine.setPreampGain(gainDb)
-        _preampGainDb.value = gainDb
-        dspPipeline.preamp.resetClipping()
-        _hasClipped.value = false
-        if (gainDb != 0.0f && !_dspEnabled.value) {
-            toggleDspEnabled(true)
-        }
-        updateBitPerfectStatus()
-    }
+    fun setPreampGain(gainDb: Float) = playbackManager.setPreampGain(gainDb)
 
-    fun setGraphicBandGain(band: Int, gainDb: Float) {
-        dspPipeline.graphicEq.setBandGain(band, gainDb)
-        dspPipeline.nativeEngine.setGraphicBandGain(band, gainDb)
-        _graphicGains.value = dspPipeline.graphicEq.getAllGains()
-        if (gainDb != 0.0f && !_dspEnabled.value) {
-            toggleDspEnabled(true)
-        }
-        updateBitPerfectStatus()
-    }
+    fun setGraphicBandGain(band: Int, gainDb: Float) = playbackManager.setGraphicBandGain(band, gainDb)
 
-    fun applyGraphicPreset(preset: GraphicEqPreset) {
-        for (i in preset.gainsDb.indices) {
-            dspPipeline.graphicEq.setBandGain(i, preset.gainsDb[i])
-            dspPipeline.nativeEngine.setGraphicBandGain(i, preset.gainsDb[i])
-        }
-        _graphicGains.value = dspPipeline.graphicEq.getAllGains()
-        if (!dspPipeline.graphicEq.isFlat() && !_dspEnabled.value) {
-            toggleDspEnabled(true)
-        }
-        updateBitPerfectStatus()
-    }
+    fun applyGraphicPreset(preset: GraphicEqPreset) = playbackManager.applyGraphicPreset(preset)
 
-    fun setVocalFocus(mode: Int, amount: Float) {
-        dspPipeline.centerChannelProcessor.configure(mode, amount)
-        dspPipeline.nativeEngine.setVocalFocus(mode, amount)
-        _vocalFocusMode.value = mode
-        _vocalFocusAmount.value = amount
-        if (mode != CenterChannelProcessor.MODE_OFF && amount > 0.001f && !_dspEnabled.value) {
-            toggleDspEnabled(true)
-        }
-        updateBitPerfectStatus()
-    }
+    fun setVocalFocus(mode: Int, amount: Float) = playbackManager.setVocalFocus(mode, amount)
 
-    private fun updateBitPerfectStatus() {
-        _isBitPerfect.value = dspPipeline.isBitPerfectEligible()
-    }
+    fun setGaplessEnabled(enabled: Boolean) = playbackManager.setGaplessEnabled(enabled)
+
+    fun setAutoResumeEnabled(enabled: Boolean) = playbackManager.setAutoResumeEnabled(enabled)
+
+    fun resetClipping() = playbackManager.resetClipping()
+
+    fun updateBitPerfectStatus() = playbackManager.updateBitPerfectStatus()
 
     override fun onCleared() {
         super.onCleared()
         repository.unregisterMediaStoreObserver()
-        audioPlayer.stop()
-        dspPipeline.nativeEngine.release()
+        // Audio playback and DSP engine are owned by PlaybackManager and HiResAudioService
+        // so background playback continues seamlessly even if UI activity is trimmed.
     }
 }

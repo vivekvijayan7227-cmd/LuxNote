@@ -180,6 +180,18 @@ class BiquadFilter {
     }
 
     /**
+     * Process a single mono sample without allocating any array.
+     */
+    fun processMonoSample(sample: Double): Double {
+        if (isBypassed) return sample
+        val out = b0 * sample + s1L
+        s1L = b1 * sample - a1 * out + s2L
+        s2L = b2 * sample - a2 * out
+        return out
+    }
+
+
+    /**
      * Evaluates the continuous complex transfer function magnitude in dB at frequency f.
      * Used for real-time visual EQ curve rendering.
      */

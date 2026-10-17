@@ -62,6 +62,10 @@ class NativeAudioEngine {
         if (isAvailable) setGraphicBandGain(nativeHandle, band, gainDb)
     }
 
+    fun setParametricBand(band: Int, enabled: Boolean, type: Int, freq: Float, gainDb: Float, q: Float) {
+        if (isAvailable) setParametricBand(nativeHandle, band, enabled, type, freq, gainDb, q)
+    }
+
     fun setPreampGain(gainDb: Float) {
         if (isAvailable) setPreampGain(nativeHandle, gainDb)
     }
@@ -106,6 +110,7 @@ class NativeAudioEngine {
     private external fun destroyEngine(handle: Long)
     private external fun setSampleRate(handle: Long, sampleRate: Float)
     private external fun setGraphicBandGain(handle: Long, band: Int, gainDb: Float)
+    private external fun setParametricBand(handle: Long, band: Int, enabled: Boolean, type: Int, freq: Float, gainDb: Float, q: Float)
     private external fun setPreampGain(handle: Long, gainDb: Float)
     private external fun setVocalFocus(handle: Long, mode: Int, amount: Float)
     private external fun setDspEnabled(handle: Long, enabled: Boolean)
@@ -114,5 +119,4 @@ class NativeAudioEngine {
     private external fun hasClipped(handle: Long): Boolean
     private external fun resetClipping(handle: Long)
     private external fun getEngineVersion(): String
-    private external fun isNativeAvailable(): Boolean
 }

@@ -43,13 +43,37 @@ class StudioDspPipeline {
         }
     }
 
-    /**
-     * Determines whether the current signal path is Bit-Perfect eligible.
-     * True ONLY if DSP processing is bypassed.
-     */
     fun isBitPerfectEligible(): Boolean {
-        if (dspEnabled) return false
-        return true
+        return !dspEnabled
+    }
+
+    fun setPreampGain(gainDb: Float) {
+        preamp.setGainDb(gainDb)
+        nativeEngine.setPreampGain(gainDb)
+    }
+
+    fun setGraphicBandGain(band: Int, gainDb: Float) {
+        graphicEq.setBandGain(band, gainDb)
+        nativeEngine.setGraphicBandGain(band, gainDb)
+    }
+
+    fun setParametricBand(band: Int, enabled: Boolean, type: BiquadType, freq: Float, gainDb: Float, q: Float) {
+        parametricEq.configureBand(band, enabled, type, freq, gainDb, q)
+        nativeEngine.setParametricBand(band, enabled, type.ordinal, freq, gainDb, q)
+    }
+
+    fun setVocalFocus(mode: Int, amount: Float) {
+        centerChannelProcessor.configure(mode, amount)
+        nativeEngine.setVocalFocus(mode, amount)
+    }
+
+    fun hasClipped(): Boolean {
+        return if (nativeEngine.isAvailable) nativeEngine.hasClipped() else preamp.hasClipped()
+    }
+
+    fun resetClipping() {
+        nativeEngine.resetClipping()
+        preamp.resetClipping()
     }
 
     /**
@@ -103,6 +127,9 @@ class StudioDspPipeline {
         nativeEngine.setDspEnabled(false)
         for (i in 0 until 10) {
             nativeEngine.setGraphicBandGain(i, 0.0f)
+        }
+        for (i in 0 until 12) {
+            nativeEngine.setParametricBand(i, false, 0, 1000f, 0f, 0.707f)
         }
     }
 }

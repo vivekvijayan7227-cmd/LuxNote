@@ -60,11 +60,20 @@ class HiResAudioService : Service(), AudioManager.OnAudioFocusChangeListener {
         fun getService(): HiResAudioService = this@HiResAudioService
     }
 
+    private fun dispatchTransport(action: String) {
+        onTransportAction?.invoke(action)
+        try {
+            PlaybackManager.getInstance(applicationContext).handleTransportAction(action)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
     private val noisyReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
                 // Auto-pause when headphones unplugged or Bluetooth disconnected
-                onTransportAction?.invoke(ACTION_PAUSE)
+                dispatchTransport(ACTION_PAUSE)
             }
         }
     }
@@ -89,24 +98,26 @@ class HiResAudioService : Service(), AudioManager.OnAudioFocusChangeListener {
 
     private var serviceWakeLock: android.os.PowerManager.WakeLock? = null
 
+    fun isWakeLockHeld(): Boolean = serviceWakeLock?.isHeld == true
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val action = intent?.action
         when (action) {
-            ACTION_PLAY -> onTransportAction?.invoke(ACTION_PLAY)
+            ACTION_PLAY -> dispatchTransport(ACTION_PLAY)
             ACTION_PAUSE -> {
-                onTransportAction?.invoke(ACTION_PAUSE)
+                dispatchTransport(ACTION_PAUSE)
                 return START_STICKY
             }
-            ACTION_PREV -> onTransportAction?.invoke(ACTION_PREV)
-            ACTION_NEXT -> onTransportAction?.invoke(ACTION_NEXT)
+            ACTION_PREV -> dispatchTransport(ACTION_PREV)
+            ACTION_NEXT -> dispatchTransport(ACTION_NEXT)
             ACTION_STOP -> {
-                onTransportAction?.invoke(ACTION_STOP)
+                dispatchTransport(ACTION_STOP)
                 stopForegroundService()
                 stopSelf()
                 return START_NOT_STICKY
             }
             ACTION_SYNC_STATE -> {
-                // Internal sync from ViewModel: DO NOT dispatch back to ViewModel to avoid infinite loop
+                // Internal sync from PlaybackManager/ViewModel: DO NOT dispatch back to avoid loop
             }
         }
 
@@ -120,7 +131,7 @@ class HiResAudioService : Service(), AudioManager.OnAudioFocusChangeListener {
                 title = trackTitle,
                 artist = intent.getStringExtra("EXTRA_ARTIST") ?: "Unknown Artist",
                 album = intent.getStringExtra("EXTRA_ALBUM") ?: "Unknown Album",
-                durationMs = intent.getLongExtra("EXTRA_DURATION", 180000L),
+                durationMs = intent.getLongExtra("EXTRA_DURATION", 0L),
                 sampleRate = 44100,
                 bitDepth = 24,
                 format = intent.getStringExtra("EXTRA_FORMAT") ?: "FLAC",
@@ -165,28 +176,28 @@ class HiResAudioService : Service(), AudioManager.OnAudioFocusChangeListener {
         mediaSession = MediaSession(this, "HiResStudioAudioSession").apply {
             setCallback(object : MediaSession.Callback() {
                 override fun onPlay() {
-                    onTransportAction?.invoke(ACTION_PLAY)
+                    dispatchTransport(ACTION_PLAY)
                 }
 
                 override fun onPause() {
-                    onTransportAction?.invoke(ACTION_PAUSE)
+                    dispatchTransport(ACTION_PAUSE)
                 }
 
                 override fun onSkipToNext() {
-                    onTransportAction?.invoke(ACTION_NEXT)
+                    dispatchTransport(ACTION_NEXT)
                 }
 
                 override fun onSkipToPrevious() {
-                    onTransportAction?.invoke(ACTION_PREV)
+                    dispatchTransport(ACTION_PREV)
                 }
 
                 override fun onStop() {
-                    onTransportAction?.invoke(ACTION_STOP)
+                    dispatchTransport(ACTION_STOP)
                     stopForegroundService()
                 }
 
                 override fun onSeekTo(pos: Long) {
-                    onTransportAction?.invoke("SEEK:$pos")
+                    dispatchTransport("SEEK:$pos")
                 }
             })
 
@@ -248,23 +259,28 @@ class HiResAudioService : Service(), AudioManager.OnAudioFocusChangeListener {
             AudioManager.AUDIOFOCUS_LOSS -> {
                 // Permanent focus loss (another music app started playback)
                 wasPlayingBeforeFocusLoss = false
-                onTransportAction?.invoke(ACTION_PAUSE)
+                dispatchTransport(ACTION_PAUSE)
             }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
                 // Temporary loss (e.g. phone call). Pause and auto-resume on GAIN
                 if (isPlaying) {
                     wasPlayingBeforeFocusLoss = true
-                    onTransportAction?.invoke(ACTION_PAUSE)
+                    dispatchTransport(ACTION_PAUSE)
                 }
             }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
                 // Minor system sound / notification ding: Keep playing without pausing
             }
             AudioManager.AUDIOFOCUS_GAIN -> {
-                // Regained focus: resume playback if previously playing
+                // Regained focus: resume playback if previously playing and auto-resume is enabled
                 if (wasPlayingBeforeFocusLoss) {
                     wasPlayingBeforeFocusLoss = false
-                    onTransportAction?.invoke(ACTION_PLAY)
+                    val autoResume = try {
+                        PlaybackManager.getInstance(applicationContext).isAutoResumeEnabled.value
+                    } catch (_: Exception) { true }
+                    if (autoResume) {
+                        dispatchTransport(ACTION_PLAY)
+                    }
                 }
             }
         }

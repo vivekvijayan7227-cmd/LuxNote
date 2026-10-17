@@ -46,6 +46,15 @@ Java_com_audioplayer_hires_audio_NativeAudioEngine_setGraphicBandGain(JNIEnv* /*
 }
 
 JNIEXPORT void JNICALL
+Java_com_audioplayer_hires_audio_NativeAudioEngine_setParametricBand(
+    JNIEnv* /*env*/, jobject /*thiz*/, jlong handle, jint band, jboolean enabled, jint type, jfloat freq, jfloat gainDb, jfloat q) {
+    auto* engine = getEngine(handle);
+    if (engine) {
+        engine->setParametricBand(band, enabled, type, freq, gainDb, q);
+    }
+}
+
+JNIEXPORT void JNICALL
 Java_com_audioplayer_hires_audio_NativeAudioEngine_setPreampGain(JNIEnv* /*env*/, jobject /*thiz*/, jlong handle, jfloat gainDb) {
     auto* engine = getEngine(handle);
     if (engine) {
@@ -75,6 +84,13 @@ Java_com_audioplayer_hires_audio_NativeAudioEngine_processInterleavedStereo(
     auto* engine = getEngine(handle);
     if (!engine || !buffer || frameCount <= 0) return;
 
+    // Strict bounds check: array must contain at least frameCount * 2 samples
+    jsize arrayLen = env->GetArrayLength(buffer);
+    if (arrayLen < frameCount * 2) {
+        LOGE("processInterleavedStereo buffer underflow: len=%d, required=%d", arrayLen, frameCount * 2);
+        return;
+    }
+
     jfloat* rawBuf = env->GetFloatArrayElements(buffer, nullptr);
     if (rawBuf) {
         engine->processInterleavedStereo(rawBuf, frameCount);
@@ -86,7 +102,14 @@ JNIEXPORT void JNICALL
 Java_com_audioplayer_hires_audio_NativeAudioEngine_computeFftBands(
     JNIEnv* env, jobject /*thiz*/, jlong handle, jfloatArray outBands, jint bandCount) {
     auto* engine = getEngine(handle);
-    if (!engine || !outBands || bandCount <= 0) return;
+    if (!engine || !outBands || bandCount <= 0 || bandCount > 64) return;
+
+    // Strict bounds check: destination array must have at least bandCount elements
+    jsize arrayLen = env->GetArrayLength(outBands);
+    if (arrayLen < bandCount) {
+        LOGE("computeFftBands array underflow: len=%d, required=%d", arrayLen, bandCount);
+        return;
+    }
 
     jfloat* rawBands = env->GetFloatArrayElements(outBands, nullptr);
     if (rawBands) {
@@ -111,13 +134,8 @@ Java_com_audioplayer_hires_audio_NativeAudioEngine_resetClipping(JNIEnv* /*env*/
 
 JNIEXPORT jstring JNICALL
 Java_com_audioplayer_hires_audio_NativeAudioEngine_getEngineVersion(JNIEnv* env, jobject /*thiz*/) {
-    std::string ver = "HiRes-Native-C++20-v2.6-BitPerfect-DSP (libhires_audio.so)";
-    return env->NewStringUTF(ver.c_str());
-}
-
-JNIEXPORT jboolean JNICALL
-Java_com_audioplayer_hires_audio_NativeAudioEngine_isNativeAvailable(JNIEnv* /*env*/, jobject /*thiz*/) {
-    return JNI_TRUE;
+    std::string v = "LuxNote Native C++20 SIMD Studio Engine v3.0 (Thread-Safe Snapshot, 10-Graphic + 12-Parametric Biquad Cascade, M/S Vocal Studio, 1024-FFT)";
+    return env->NewStringUTF(v.c_str());
 }
 
 } // extern "C"
