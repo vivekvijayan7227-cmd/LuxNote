@@ -69,6 +69,7 @@ fun NowPlayingScreen(viewModel: MainViewModel) {
     val queues by viewModel.queues.collectAsState()
     val activeQueueId by viewModel.activeQueueId.collectAsState()
     val playlists by viewModel.playlists.collectAsState()
+    val playbackError by viewModel.playbackError.collectAsState()
 
     var showQueueSwitcherDialog by remember { mutableStateOf(false) }
     var showSpeedDialog by remember { mutableStateOf(false) }
@@ -394,6 +395,35 @@ fun NowPlayingScreen(viewModel: MainViewModel) {
             )
         }
 
+        // Playback Error Banner (Non-blocking studio notice)
+        if (playbackError != null) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 2.dp),
+                color = StudioColors.Error.copy(alpha = 0.15f),
+                border = androidx.compose.foundation.BorderStroke(1.dp, StudioColors.Error),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    val errText = when (val err = playbackError) {
+                        is com.audioplayer.hires.audio.AudioTrackPlayer.PlaybackError.UnsupportedEncoding -> "Notice: ${err.details}"
+                        is com.audioplayer.hires.audio.AudioTrackPlayer.PlaybackError.CodecError -> "Audio Notice: ${err.message}"
+                        is com.audioplayer.hires.audio.AudioTrackPlayer.PlaybackError.DataSourceError -> "File Notice: ${err.message}"
+                        else -> "Playback Notice"
+                    }
+                    Text(errText, color = StudioColors.Error, fontSize = 11.sp, modifier = Modifier.weight(1f), maxLines = 2)
+                    IconButton(onClick = { viewModel.clearPlaybackError() }, modifier = Modifier.size(32.dp)) {
+                        Icon(Icons.Default.Close, contentDescription = "Dismiss notice", tint = StudioColors.Error, modifier = Modifier.size(16.dp))
+                    }
+                }
+            }
+        }
+
         // 5. Primary Transport Controls (Image 1, 2): Shuffle, Prev, 72dp Gold Play, Next, Repeat
         Row(
             modifier = Modifier
@@ -461,15 +491,20 @@ fun NowPlayingScreen(viewModel: MainViewModel) {
                 )
             }
 
-            // Repeat
+            // Repeat (Distinct RepeatOne, RepeatAll, Off states)
             IconButton(
                 onClick = { viewModel.toggleRepeatMode() },
                 modifier = Modifier.size(48.dp)
             ) {
+                val (repeatIcon, repeatDesc, repeatTint) = when (repeatMode) {
+                    com.audioplayer.hires.model.RepeatMode.ONE -> Triple(Icons.Default.RepeatOne, "Repeat mode: Repeat Current Track", StudioColors.Gold)
+                    com.audioplayer.hires.model.RepeatMode.ALL -> Triple(Icons.Default.Repeat, "Repeat mode: Repeat All Queue", StudioColors.Blue)
+                    com.audioplayer.hires.model.RepeatMode.OFF -> Triple(Icons.Default.Repeat, "Repeat mode: Off", StudioColors.TextMuted)
+                }
                 Icon(
-                    imageVector = Icons.Default.Repeat,
-                    contentDescription = "Repeat mode: ${repeatMode.name.lowercase().replaceFirstChar { it.uppercase() }}",
-                    tint = if (repeatMode != com.audioplayer.hires.model.RepeatMode.OFF) StudioColors.Blue else StudioColors.TextMuted,
+                    imageVector = repeatIcon,
+                    contentDescription = repeatDesc,
+                    tint = repeatTint,
                     modifier = Modifier.size(24.dp)
                 )
             }

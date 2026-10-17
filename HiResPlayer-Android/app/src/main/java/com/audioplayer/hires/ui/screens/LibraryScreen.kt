@@ -462,168 +462,28 @@ fun LibraryScreen(viewModel: MainViewModel) {
                 }
             }
             selectedTab == LibraryCategoryTab.ALBUMS -> {
-                val albums = remember(allTracks) {
-                    allTracks.map { it.album }.filter { it.isNotBlank() }.distinct().sorted()
-                }
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = 80.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(albums) { album ->
-                        val albumSongs = allTracks.filter { it.album == album }
-                        Surface(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
-                                .clickable { selectedAlbumForView = album },
-                            shape = RoundedCornerShape(12.dp),
-                            color = StudioColors.Surface,
-                            border = androidx.compose.foundation.BorderStroke(1.dp, StudioColors.Divider)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(14.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(46.dp)
-                                            .clip(RoundedCornerShape(10.dp))
-                                            .background(StudioColors.SurfaceElevated),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Icon(Icons.Default.Album, contentDescription = null, tint = StudioColors.Gold, modifier = Modifier.size(24.dp))
-                                    }
-                                    Spacer(modifier = Modifier.width(12.dp))
-                                    Column {
-                                        Text(album, color = StudioColors.TextPrimary, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                        Text("${albumSongs.size} tracks", color = StudioColors.TextSecondary, style = MaterialTheme.typography.bodySmall)
-                                    }
-                                }
-                                Icon(Icons.Default.ChevronRight, contentDescription = null, tint = StudioColors.TextMuted)
-                            }
-                        }
-                    }
-                }
-            }
-            selectedTab == LibraryCategoryTab.ARTISTS -> {
-                val artists = remember(allTracks) {
-                    allTracks.map { it.artist }.filter { it.isNotBlank() }.distinct().sorted()
-                }
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = 80.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(artists) { artist ->
-                        val artistSongs = allTracks.filter { it.artist.equals(artist, ignoreCase = true) }
-                        Surface(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
-                                .clickable { selectedArtistForView = artist },
-                            shape = RoundedCornerShape(12.dp),
-                            color = StudioColors.Surface,
-                            border = androidx.compose.foundation.BorderStroke(1.dp, StudioColors.Divider)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(14.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(46.dp)
-                                            .clip(CircleShape)
-                                            .background(StudioColors.SurfaceElevated),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Icon(Icons.Default.Person, contentDescription = null, tint = StudioColors.Blue, modifier = Modifier.size(24.dp))
-                                    }
-                                    Spacer(modifier = Modifier.width(12.dp))
-                                    Column {
-                                        Text(artist, color = StudioColors.TextPrimary, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                        Text("${artistSongs.size} tracks", color = StudioColors.TextSecondary, style = MaterialTheme.typography.bodySmall)
-                                    }
-                                }
-                                Icon(Icons.Default.ChevronRight, contentDescription = null, tint = StudioColors.TextMuted)
-                            }
-                        }
-                    }
-                }
-            }
-            selectedTab == LibraryCategoryTab.FOLDERS -> {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = 80.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(folders) { folder ->
-                        Surface(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
-                                .clickable { selectedFolderForView = folder },
-                            shape = RoundedCornerShape(12.dp),
-                            color = StudioColors.Surface,
-                            border = androidx.compose.foundation.BorderStroke(1.dp, StudioColors.Divider)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(14.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(46.dp)
-                                            .clip(RoundedCornerShape(10.dp))
-                                            .background(StudioColors.SurfaceElevated),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Icon(Icons.Default.Folder, contentDescription = null, tint = StudioColors.Gold, modifier = Modifier.size(24.dp))
-                                    }
-                                    Spacer(modifier = Modifier.width(12.dp))
-                                    Column {
-                                        Text(folder.name, color = StudioColors.TextPrimary, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                        Text("${folder.trackCount} tracks", color = StudioColors.TextSecondary, style = MaterialTheme.typography.bodySmall)
-                                    }
-                                }
-                                Icon(Icons.Default.ChevronRight, contentDescription = null, tint = StudioColors.TextMuted)
-                            }
-                        }
-                    }
-                }
-            }
-            selectedTab == LibraryCategoryTab.PLAYLISTS -> {
-                Column(modifier = Modifier.fillMaxSize()) {
-                    Button(
-                        onClick = { showCreatePlaylistDialog = true },
-                        colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Gold, contentColor = StudioColors.Background),
-                        shape = RoundedCornerShape(100.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 8.dp)
-                    ) {
-                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Create New Playlist", fontWeight = FontWeight.Bold)
-                    }
-
+                val albums = viewModel.getFilteredAlbums()
+                if (albums.isEmpty() && searchQuery.isNotBlank()) {
+                    EmptyState(
+                        title = "No albums match \"$searchQuery\"",
+                        message = "Try checking for spelling mistakes or clear your search to browse all albums.",
+                        actionLabel = "Clear Search",
+                        onAction = { viewModel.setSearchQuery("") },
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(bottom = 80.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        items(playlists) { playlist ->
+                        items(albums) { album ->
+                            val albumSongs = allTracks.filter { it.album == album }
                             Surface(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(12.dp))
-                                    .clickable { selectedPlaylistForView = playlist },
+                                    .clickable { selectedAlbumForView = album },
                                 shape = RoundedCornerShape(12.dp),
                                 color = StudioColors.Surface,
                                 border = androidx.compose.foundation.BorderStroke(1.dp, StudioColors.Divider)
@@ -641,15 +501,193 @@ fun LibraryScreen(viewModel: MainViewModel) {
                                                 .background(StudioColors.SurfaceElevated),
                                             contentAlignment = Alignment.Center
                                         ) {
-                                            Icon(Icons.Default.PlaylistPlay, contentDescription = null, tint = StudioColors.Gold, modifier = Modifier.size(24.dp))
+                                            Icon(Icons.Default.Album, contentDescription = null, tint = StudioColors.Gold, modifier = Modifier.size(24.dp))
                                         }
                                         Spacer(modifier = Modifier.width(12.dp))
                                         Column {
-                                            Text(playlist.name, color = StudioColors.TextPrimary, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                            Text("${playlist.trackIds.size} songs", color = StudioColors.TextSecondary, style = MaterialTheme.typography.bodySmall)
+                                            Text(album, color = StudioColors.TextPrimary, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                            Text("${albumSongs.size} tracks", color = StudioColors.TextSecondary, style = MaterialTheme.typography.bodySmall)
                                         }
                                     }
                                     Icon(Icons.Default.ChevronRight, contentDescription = null, tint = StudioColors.TextMuted)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            selectedTab == LibraryCategoryTab.ARTISTS -> {
+                val artists = viewModel.getFilteredArtists()
+                if (artists.isEmpty() && searchQuery.isNotBlank()) {
+                    EmptyState(
+                        title = "No artists match \"$searchQuery\"",
+                        message = "Try checking for spelling mistakes or clear your search to browse all artists.",
+                        actionLabel = "Clear Search",
+                        onAction = { viewModel.setSearchQuery("") },
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(bottom = 80.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(artists) { artist ->
+                            val artistSongs = allTracks.filter { it.artist.equals(artist, ignoreCase = true) }
+                            Surface(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .clickable { selectedArtistForView = artist },
+                                shape = RoundedCornerShape(12.dp),
+                                color = StudioColors.Surface,
+                                border = androidx.compose.foundation.BorderStroke(1.dp, StudioColors.Divider)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(14.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(46.dp)
+                                                .clip(CircleShape)
+                                                .background(StudioColors.SurfaceElevated),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(Icons.Default.Person, contentDescription = null, tint = StudioColors.Blue, modifier = Modifier.size(24.dp))
+                                        }
+                                        Spacer(modifier = Modifier.width(12.dp))
+                                        Column {
+                                            Text(artist, color = StudioColors.TextPrimary, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                            Text("${artistSongs.size} tracks", color = StudioColors.TextSecondary, style = MaterialTheme.typography.bodySmall)
+                                        }
+                                    }
+                                    Icon(Icons.Default.ChevronRight, contentDescription = null, tint = StudioColors.TextMuted)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            selectedTab == LibraryCategoryTab.FOLDERS -> {
+                val filteredFolders = viewModel.getFilteredFolders()
+                if (filteredFolders.isEmpty() && searchQuery.isNotBlank()) {
+                    EmptyState(
+                        title = "No folders match \"$searchQuery\"",
+                        message = "Try checking for spelling mistakes or clear your search to browse all folders.",
+                        actionLabel = "Clear Search",
+                        onAction = { viewModel.setSearchQuery("") },
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(bottom = 80.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(filteredFolders) { folder ->
+                            Surface(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .clickable { selectedFolderForView = folder },
+                                shape = RoundedCornerShape(12.dp),
+                                color = StudioColors.Surface,
+                                border = androidx.compose.foundation.BorderStroke(1.dp, StudioColors.Divider)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(14.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(46.dp)
+                                                .clip(RoundedCornerShape(10.dp))
+                                                .background(StudioColors.SurfaceElevated),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(Icons.Default.Folder, contentDescription = null, tint = StudioColors.Gold, modifier = Modifier.size(24.dp))
+                                        }
+                                        Spacer(modifier = Modifier.width(12.dp))
+                                        Column {
+                                            Text(folder.name, color = StudioColors.TextPrimary, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                            Text("${folder.trackCount} tracks", color = StudioColors.TextSecondary, style = MaterialTheme.typography.bodySmall)
+                                        }
+                                    }
+                                    Icon(Icons.Default.ChevronRight, contentDescription = null, tint = StudioColors.TextMuted)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            selectedTab == LibraryCategoryTab.PLAYLISTS -> {
+                val filteredPlaylists = viewModel.getFilteredPlaylists()
+                Column(modifier = Modifier.fillMaxSize()) {
+                    Button(
+                        onClick = { showCreatePlaylistDialog = true },
+                        colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Gold, contentColor = StudioColors.Background),
+                        shape = RoundedCornerShape(100.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp)
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Create New Playlist", fontWeight = FontWeight.Bold)
+                    }
+
+                    if (filteredPlaylists.isEmpty() && searchQuery.isNotBlank()) {
+                        EmptyState(
+                            title = "No playlists match \"$searchQuery\"",
+                            message = "Try checking for spelling mistakes or clear your search to browse all playlists.",
+                            actionLabel = "Clear Search",
+                            onAction = { viewModel.setSearchQuery("") },
+                            modifier = Modifier.weight(1f)
+                        )
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(bottom = 80.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            items(filteredPlaylists) { playlist ->
+                                Surface(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .clickable { selectedPlaylistForView = playlist },
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = StudioColors.Surface,
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, StudioColors.Divider)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(14.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(46.dp)
+                                                    .clip(RoundedCornerShape(10.dp))
+                                                    .background(StudioColors.SurfaceElevated),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Icon(Icons.Default.PlaylistPlay, contentDescription = null, tint = StudioColors.Gold, modifier = Modifier.size(24.dp))
+                                            }
+                                            Spacer(modifier = Modifier.width(12.dp))
+                                            Column {
+                                                Text(playlist.name, color = StudioColors.TextPrimary, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                                Text("${playlist.trackIds.size} songs", color = StudioColors.TextSecondary, style = MaterialTheme.typography.bodySmall)
+                                            }
+                                        }
+                                        Icon(Icons.Default.ChevronRight, contentDescription = null, tint = StudioColors.TextMuted)
+                                    }
                                 }
                             }
                         }

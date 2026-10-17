@@ -8,13 +8,22 @@ data class Track(
     val durationMs: Long,
     val sampleRate: Int = 44100,
     val bitDepth: Int = 16,
-    val format: String = "FLAC",
-    val bitrateKbps: Int = 1411,
+    val format: String = "AUDIO",
+    val bitrateKbps: Int = 0,
     val uriString: String = "",
-    val artworkUri: String? = null
+    val artworkUri: String? = null,
+    val isAvailable: Boolean = true,
+    val isMetadataVerified: Boolean = false
 ) {
     val formatBadge: String
-        get() = "$format $bitDepth-bit / ${sampleRate / 1000} kHz • $bitrateKbps kbps"
+        get() = if (isMetadataVerified) {
+            val rateStr = if (sampleRate > 0) "${sampleRate / 1000} kHz" else ""
+            val bitStr = if (bitDepth > 0) "$bitDepth-bit" else ""
+            val brStr = if (bitrateKbps > 0) "$bitrateKbps kbps" else ""
+            listOf(format, bitStr, rateStr, brStr).filter { it.isNotBlank() }.joinToString(" • ")
+        } else {
+            "$format • Source info pending playback"
+        }
 }
 
 enum class PlayerStatus {

@@ -121,6 +121,7 @@ class StudioDspPipeline {
     }
 
     fun reset() {
+        dspEnabled = false
         preamp.setGainDb(0.0f)
         preamp.resetClipping()
         graphicEq.reset()

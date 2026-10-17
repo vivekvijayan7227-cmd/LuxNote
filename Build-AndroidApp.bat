@@ -34,16 +34,32 @@ if %ERRORLEVEL% NEQ 0 (
 )
 
 echo.
-echo [3/3] Copying LuxNote Production APK...
-if exist "app\build\outputs\apk\release\app-release.apk" (
-    copy /Y "app\build\outputs\apk\release\app-release.apk" "%~dp0LuxNote.apk" >nul
-) else if exist "app\build\outputs\apk\release\app-release-unsigned.apk" (
-    copy /Y "app\build\outputs\apk\release\app-release-unsigned.apk" "%~dp0LuxNote.apk" >nul
+echo [3/4] Verifying and Copying Production Release APK...
+if not exist "app\build\outputs\apk\release\app-release.apk" (
+    echo [ERROR] Signed release APK not found!
+    echo [ERROR] Release builds must be properly signed with production credentials.
+    exit /b 1
+)
+
+copy /Y "app\build\outputs\apk\release\app-release.apk" "%~dp0LuxNote.apk" >nul
+if %ERRORLEVEL% NEQ 0 (
+    echo [ERROR] Failed to copy production APK to root directory!
+    exit /b %ERRORLEVEL%
+)
+
+if not exist "%~dp0LuxNote.apk" (
+    echo [ERROR] Verified LuxNote.apk does not exist at destination!
+    exit /b 1
 )
 
 echo.
+echo [4/4] Generating SHA-256 Checksum...
+powershell -NoProfile -Command "(Get-FileHash -Path '%~dp0LuxNote.apk' -Algorithm SHA256).Hash + '  LuxNote.apk'" > "%~dp0LuxNote.apk.sha256"
+
+echo.
 echo ========================================================
-echo  BUILD SUCCESSFUL!
-echo  APK Location: %~dp0LuxNote.apk
+echo  BUILD & RELEASE VERIFICATION SUCCESSFUL!
+echo  Signed APK: %~dp0LuxNote.apk
+echo  Checksum:   %~dp0LuxNote.apk.sha256
 echo ========================================================
 endlocal

@@ -189,20 +189,26 @@ fun VocalStudioScreen(viewModel: MainViewModel) {
         ) {
             Column(modifier = Modifier.padding(14.dp)) {
                 Text(
-                    text = "Live Mid / Side Balance",
+                    text = "Acoustic Mid / Side Field Balance",
                     color = StudioTextPrimary,
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Bold
                 )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "Mid = (L+R)/2 (center vocals & soloists)  •  Side = (L-R)/2 (stereo width & ambience)",
+                    color = StudioTextMuted,
+                    fontSize = 11.sp
+                )
 
                 Spacer(modifier = Modifier.height(10.dp))
 
-                // Vocal (Mid Channel) Fader
+                // Center (Mid Channel) Fader
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Vocal (Mid):", color = StudioTextMuted, fontSize = 13.sp, modifier = Modifier.width(110.dp))
+                    Text("Center (Mid):", color = StudioTextMuted, fontSize = 13.sp, modifier = Modifier.width(110.dp))
                     Slider(
                         value = vocalVol,
                         onValueChange = {
@@ -223,12 +229,12 @@ fun VocalStudioScreen(viewModel: MainViewModel) {
 
                 Spacer(modifier = Modifier.height(6.dp))
 
-                // Accompaniment (Side Channel) Fader
+                // Stereo Field (Side Channel) Fader
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Instruments (Side):", color = StudioTextMuted, fontSize = 13.sp, modifier = Modifier.width(110.dp))
+                    Text("Stereo (Side):", color = StudioTextMuted, fontSize = 13.sp, modifier = Modifier.width(110.dp))
                     Slider(
                         value = instVol,
                         onValueChange = {

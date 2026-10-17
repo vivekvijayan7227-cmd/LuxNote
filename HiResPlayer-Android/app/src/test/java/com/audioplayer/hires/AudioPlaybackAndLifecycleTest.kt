@@ -10,7 +10,7 @@ class AudioPlaybackAndLifecycleTest {
 
     @Test
     fun testTrackFormatBadgeAndTiming() {
-        val flacTrack = Track(
+        val flacTrackVerified = Track(
             id = 101L,
             title = "Midnight Echo",
             artist = "Acoustic Reference",
@@ -20,26 +20,30 @@ class AudioPlaybackAndLifecycleTest {
             bitDepth = 24,
             format = "FLAC",
             bitrateKbps = 2450,
-            uriString = "content://media/external/audio/media/101"
+            uriString = "content://media/external/audio/media/101",
+            isMetadataVerified = true
         )
 
-        assertEquals("FLAC 24-bit / 96 kHz • 2450 kbps", flacTrack.formatBadge)
-        assertEquals("04:00", formatTime(flacTrack.durationMs))
+        assertEquals("FLAC • 24-bit • 96 kHz • 2450 kbps", flacTrackVerified.formatBadge)
+        assertEquals("04:00", formatTime(flacTrackVerified.durationMs))
 
-        val mp3Track = Track(
+        val unverifiedTrack = Track(
             id = 102L,
-            title = "Standard MP3",
+            title = "Pending Song",
             artist = "Test Artist",
             album = "Test Album",
             durationMs = 185000L,
-            sampleRate = 44100,
-            bitDepth = 16,
             format = "MP3",
-            bitrateKbps = 320,
-            uriString = "file:///storage/emulated/0/Music/song.mp3"
+            isMetadataVerified = false
         )
-        assertEquals("MP3 16-bit / 44 kHz • 320 kbps", mp3Track.formatBadge)
-        assertEquals("03:05", formatTime(mp3Track.durationMs))
+        assertEquals("MP3 • Source info pending playback", unverifiedTrack.formatBadge)
+        assertEquals("03:05", formatTime(unverifiedTrack.durationMs))
+    }
+
+    @Test
+    fun testNonDestructiveScanResult() {
+        val failure = com.audioplayer.hires.data.ScanResult.Failure(Exception("Storage permission revoked"))
+        assertTrue(failure.error.contains("Storage permission revoked"))
     }
 
     @Test

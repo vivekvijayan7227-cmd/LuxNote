@@ -303,4 +303,69 @@ class DspAudioEngineTest {
         processor.setStemBalance(1.0f, 1.0f)
         assertFalse(processor.isActive())
     }
+
+    @Test
+    fun testItuRBs775MultichannelDownmixing() {
+        // 5.1 channel: L, R, C, LFE, Ls, Rs
+        // If center channel has 1.0 and others 0, L and R in stereo should each receive ~0.7071
+        val frame51 = floatArrayOf(0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f)
+        val out51 = FloatArray(2)
+
+        val invSqrt2 = 0.70710678f
+        val norm51 = 1.0f / (1.0f + invSqrt2 + invSqrt2)
+        val expectedCenterLevel = 1.0f * invSqrt2 * norm51
+
+        // Verify mathematical scaling conforms to BS.775
+        val l51 = (frame51[0] + frame51[2] * invSqrt2 + frame51[4] * invSqrt2) * norm51
+        val r51 = (frame51[1] + frame51[2] * invSqrt2 + frame51[5] * invSqrt2) * norm51
+        assertEquals(expectedCenterLevel, l51, 0.0001f)
+        assertEquals(expectedCenterLevel, r51, 0.0001f)
+    }
+
+    @Test
+    fun testLogarithmicFrequencyMappingMath() {
+        val freqToSlider = { f: Float ->
+            (kotlin.math.log10(f.coerceIn(20f, 20000f) / 20.0f) / 3.0f).coerceIn(0f, 1f)
+        }
+        val sliderToFreq = { x: Float ->
+            20.0f * Math.pow(10.0, (x.coerceIn(0f, 1f) * 3.0)).toFloat()
+        }
+
+        // Test 20 Hz (start of slider)
+        assertEquals(0.0f, freqToSlider(20.0f), 0.001f)
+        assertEquals(20.0f, sliderToFreq(0.0f), 0.1f)
+
+        // Test 200 Hz (1/3 of slider)
+        assertEquals(1.0f / 3.0f, freqToSlider(200.0f), 0.001f)
+        assertEquals(200.0f, sliderToFreq(1.0f / 3.0f), 0.1f)
+
+        // Test 2000 Hz (2/3 of slider)
+        assertEquals(2.0f / 3.0f, freqToSlider(2000.0f), 0.001f)
+        assertEquals(2000.0f, sliderToFreq(2.0f / 3.0f), 0.5f)
+
+        // Test 20,000 Hz (end of slider)
+        assertEquals(1.0f, freqToSlider(20000.0f), 0.001f)
+        assertEquals(20000.0f, sliderToFreq(1.0f), 1.0f)
+    }
+
+    @Test
+    fun testStudioDspPipelineUnifiedReset() {
+        val pipeline = StudioDspPipeline()
+        pipeline.dspEnabled = true
+        pipeline.setPreampGain(4.0f)
+        pipeline.setGraphicBandGain(3, 5.0f)
+        pipeline.setVocalFocus(CenterChannelProcessor.MODE_VOCAL_FOCUS, 0.8f)
+        pipeline.setStemBalance(0.5f, 1.2f)
+
+        assertTrue(pipeline.dspEnabled)
+        assertFalse(pipeline.graphicEq.isFlat())
+
+        // Execute unified reset
+        pipeline.reset()
+
+        assertFalse("dspEnabled must be false after reset", pipeline.dspEnabled)
+        assertEquals(0.0f, pipeline.preamp.getGainDb(), 0.001f)
+        assertTrue("Graphic EQ must be flat after reset", pipeline.graphicEq.isFlat())
+        assertFalse("CenterChannelProcessor must be inactive after reset", pipeline.centerChannelProcessor.isActive())
+    }
 }

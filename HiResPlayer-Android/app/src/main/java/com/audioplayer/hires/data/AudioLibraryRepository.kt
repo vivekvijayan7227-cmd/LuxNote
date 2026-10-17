@@ -29,6 +29,17 @@ import kotlin.math.exp
 import kotlin.math.sin
 
 /**
+ * Scan result hierarchy for non-destructive library operations.
+ */
+sealed class ScanResult {
+    data class Success(val tracks: List<Track>, val source: String) : ScanResult()
+    data class Partial(val tracks: List<Track>, val successfulSources: List<String>, val failedSources: List<String>) : ScanResult()
+    data class Failure(val error: String, val cause: Throwable? = null) : ScanResult() {
+        constructor(cause: Throwable) : this(cause.message ?: "Scan failed", cause)
+    }
+}
+
+/**
  * High-Performance Local Music Library Repository:
  * - Direct Physical Storage & auto-scan file scanner (bypasses ephemeral SAF permissions)
  * - Ultra-fast non-blocking MediaStore indexing (queries complete in < 50ms)
@@ -49,14 +60,10 @@ class AudioLibraryRepository(private val context: Context) {
     private val repoLock = Any()
 
     /**
-     * Query Android MediaStore to discover all music on the device asynchronously.
-     * Uses direct file paths whenever available to ensure rock-solid playback without SAF timeouts.
+     * Query Android MediaStore to discover all music on the device asynchronously with structured result.
+     * Completes in < 30ms for 1000+ tracks and does not assume unverified sample rates or bit depths.
      */
-    /**
-     * Query Android MediaStore to discover all music on the device asynchronously.
-     * Uses direct ContentResolver query which completes in < 30ms for 1000+ tracks.
-     */
-    suspend fun scanMediaStoreAsync(): List<Track> = withContext(Dispatchers.IO) {
+    suspend fun scanMediaStoreWithResultAsync(): ScanResult = withContext(Dispatchers.IO) {
         val tracks = mutableListOf<Track>()
         val projection = arrayOf(
             MediaStore.Audio.Media._ID,
@@ -79,8 +86,9 @@ class AudioLibraryRepository(private val context: Context) {
                 selection,
                 null,
                 sortOrder
-            )
-            cursor?.use {
+            ) ?: return@withContext ScanResult.Failure("MediaStore query returned null cursor (storage inaccessible or permission missing)")
+
+            cursor.use {
                 val idCol = it.getColumnIndexOrThrow(MediaStore.Audio.Media._ID)
                 val titleCol = it.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE)
                 val artistCol = it.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST)
@@ -136,7 +144,6 @@ class AudioLibraryRepository(private val context: Context) {
                         else -> "AUDIO"
                     }
 
-                    // Content URI is 100% universal across all Android versions and Scoped Storage
                     val uriString = contentUri.toString()
 
                     tracks.add(
@@ -146,20 +153,30 @@ class AudioLibraryRepository(private val context: Context) {
                             artist = artist,
                             album = album,
                             durationMs = if (duration > 0) duration else 0L,
-                            sampleRate = 44100,
-                            bitDepth = if (ext == "FLAC" || ext == "WAV") 24 else 16,
+                            sampleRate = 0,
+                            bitDepth = 0,
                             format = ext,
-                            bitrateKbps = if (ext == "FLAC") 1411 else 320,
+                            bitrateKbps = 0,
                             uriString = uriString,
-                            artworkUri = artworkUri
+                            artworkUri = artworkUri,
+                            isAvailable = true,
+                            isMetadataVerified = false
                         )
                     )
                 }
             }
+            ScanResult.Success(tracks, "MediaStore")
         } catch (e: Exception) {
-            e.printStackTrace()
+            ScanResult.Failure("MediaStore scan encountered exception: ${e.message}", e)
         }
-        tracks
+    }
+
+    suspend fun scanMediaStoreAsync(): List<Track> = withContext(Dispatchers.IO) {
+        when (val res = scanMediaStoreWithResultAsync()) {
+            is ScanResult.Success -> res.tracks
+            is ScanResult.Partial -> res.tracks
+            is ScanResult.Failure -> emptyList()
+        }
     }
 
     /**
@@ -378,6 +395,8 @@ class AudioLibraryRepository(private val context: Context) {
                         put("bitrateKbps", track.bitrateKbps)
                         put("uriString", track.uriString)
                         put("artworkUri", track.artworkUri ?: "")
+                        put("isAvailable", track.isAvailable)
+                        put("isMetadataVerified", track.isMetadataVerified)
                     }
                     jsonArray.put(obj)
                 }
@@ -429,12 +448,14 @@ class AudioLibraryRepository(private val context: Context) {
                         artist = obj.getString("artist"),
                         album = obj.getString("album"),
                         durationMs = obj.getLong("durationMs"),
-                        sampleRate = obj.optInt("sampleRate", 44100),
-                        bitDepth = obj.optInt("bitDepth", 16),
-                        format = obj.optString("format", "FLAC"),
-                        bitrateKbps = obj.optInt("bitrateKbps", 320),
+                        sampleRate = obj.optInt("sampleRate", 0),
+                        bitDepth = obj.optInt("bitDepth", 0),
+                        format = obj.optString("format", "AUDIO"),
+                        bitrateKbps = obj.optInt("bitrateKbps", 0),
                         uriString = obj.getString("uriString"),
-                        artworkUri = if (artwork.isNotBlank()) artwork else null
+                        artworkUri = if (artwork.isNotBlank()) artwork else null,
+                        isAvailable = obj.optBoolean("isAvailable", true),
+                        isMetadataVerified = obj.optBoolean("isMetadataVerified", false)
                     )
                 )
                 }

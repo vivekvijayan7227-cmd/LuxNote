@@ -76,19 +76,31 @@ fun StudioMiniPlayer(viewModel: MainViewModel) {
                         modifier = Modifier.weight(1f),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Box(
+                        Surface(
                             modifier = Modifier
-                                .size(44.dp)
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(StudioColors.SurfaceElevated),
-                            contentAlignment = Alignment.Center
+                                .size(46.dp)
+                                .clip(RoundedCornerShape(10.dp)),
+                            color = StudioColors.SurfaceElevated,
+                            border = androidx.compose.foundation.BorderStroke(1.dp, StudioColors.Divider)
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.MusicNote,
-                                contentDescription = null,
-                                tint = StudioColors.Gold,
-                                modifier = Modifier.size(22.dp)
-                            )
+                            TrackArtwork(
+                                artworkUri = track.artworkUri,
+                                trackUri = track.uriString,
+                                contentDescription = "Artwork for ${track.title}",
+                                modifier = Modifier.fillMaxSize()
+                            ) {
+                                Box(
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.MusicNote,
+                                        contentDescription = null,
+                                        tint = StudioColors.Gold,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
+                            }
                         }
 
                         Spacer(modifier = Modifier.width(12.dp))
@@ -104,7 +116,7 @@ fun StudioMiniPlayer(viewModel: MainViewModel) {
                             )
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                text = "${track.artist} · ${track.format}",
+                                text = "${track.artist} · ${track.formatBadge}",
                                 color = StudioColors.TextSecondary,
                                 style = MaterialTheme.typography.bodySmall,
                                 maxLines = 1,
@@ -116,44 +128,44 @@ fun StudioMiniPlayer(viewModel: MainViewModel) {
                     // Transport Actions: Previous, Play/Pause, Next (Image 4)
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        horizontalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
                         IconButton(
                             onClick = { viewModel.playPrevious() },
-                            modifier = Modifier.size(36.dp)
+                            modifier = Modifier.size(44.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Default.SkipPrevious,
                                 contentDescription = "Previous Track",
                                 tint = StudioColors.TextSecondary,
-                                modifier = Modifier.size(22.dp)
+                                modifier = Modifier.size(24.dp)
                             )
                         }
 
                         IconButton(
                             onClick = { viewModel.togglePlayPause() },
                             modifier = Modifier
-                                .size(38.dp)
+                                .size(44.dp)
                                 .clip(CircleShape)
                                 .background(StudioColors.Gold)
                         ) {
                             Icon(
                                 imageVector = if (playerStatus == PlayerStatus.PLAYING) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                contentDescription = "Play/Pause",
+                                contentDescription = if (playerStatus == PlayerStatus.PLAYING) "Pause" else "Play",
                                 tint = StudioColors.Background,
-                                modifier = Modifier.size(22.dp)
+                                modifier = Modifier.size(26.dp)
                             )
                         }
 
                         IconButton(
                             onClick = { viewModel.playNext() },
-                            modifier = Modifier.size(36.dp)
+                            modifier = Modifier.size(44.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Default.SkipNext,
                                 contentDescription = "Next Track",
                                 tint = StudioColors.TextSecondary,
-                                modifier = Modifier.size(22.dp)
+                                modifier = Modifier.size(24.dp)
                             )
                         }
                     }

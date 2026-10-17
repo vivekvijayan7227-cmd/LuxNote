@@ -119,7 +119,8 @@ private:
     int m_writeIdx = 2;
     int m_readIdx = 1;
     std::atomic<int> m_sharedIdx{0};
-    std::atomic<bool> m_hasNewSnapshot{false};
+    std::atomic<uint64_t> m_commitSeq{0};
+    uint64_t m_readSeq = 0; // Audio thread local (no lock, tracks last consumed commit)
 
     // Audio thread filter states (only accessed on audio thread)
     BiquadState m_graphicStates[NUM_GRAPHIC_BANDS];

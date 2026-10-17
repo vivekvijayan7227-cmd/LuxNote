@@ -30,6 +30,8 @@ class PlaybackManager private constructor(private val context: Context) {
         private const val PREFS_NAME = "luxnote_playback_prefs"
         private const val KEY_GAPLESS = "key_gapless_enabled"
         private const val KEY_AUTO_RESUME = "key_auto_resume_enabled"
+        private const val KEY_RESTORE_SESSION = "key_restore_session_enabled"
+        private const val KEY_RESUME_INTERRUPTION = "key_resume_interruption_enabled"
 
         @Volatile
         private var INSTANCE: PlaybackManager? = null
@@ -57,6 +59,9 @@ class PlaybackManager private constructor(private val context: Context) {
     private val _positionMs = MutableStateFlow(0L)
     val positionMs: StateFlow<Long> = _positionMs.asStateFlow()
 
+    private val _playbackError = MutableStateFlow<AudioTrackPlayer.PlaybackError?>(null)
+    val playbackError: StateFlow<AudioTrackPlayer.PlaybackError?> = _playbackError.asStateFlow()
+
     private val _activeQueue = MutableStateFlow<List<Track>>(emptyList())
     val activeQueue: StateFlow<List<Track>> = _activeQueue.asStateFlow()
 
@@ -79,8 +84,13 @@ class PlaybackManager private constructor(private val context: Context) {
     private val _isGaplessEnabled = MutableStateFlow(prefs.getBoolean(KEY_GAPLESS, true))
     val isGaplessEnabled: StateFlow<Boolean> = _isGaplessEnabled.asStateFlow()
 
-    private val _isAutoResumeEnabled = MutableStateFlow(prefs.getBoolean(KEY_AUTO_RESUME, true))
-    val isAutoResumeEnabled: StateFlow<Boolean> = _isAutoResumeEnabled.asStateFlow()
+    private val _isRestoreSessionEnabled = MutableStateFlow(prefs.getBoolean(KEY_RESTORE_SESSION, true))
+    val isRestoreSessionEnabled: StateFlow<Boolean> = _isRestoreSessionEnabled.asStateFlow()
+
+    private val _isResumeAfterInterruptionEnabled = MutableStateFlow(prefs.getBoolean(KEY_RESUME_INTERRUPTION, true))
+    val isResumeAfterInterruptionEnabled: StateFlow<Boolean> = _isResumeAfterInterruptionEnabled.asStateFlow()
+
+    val isAutoResumeEnabled: StateFlow<Boolean> get() = isResumeAfterInterruptionEnabled
 
     // DSP State
     private val _dspEnabled = MutableStateFlow(false)
@@ -113,6 +123,8 @@ class PlaybackManager private constructor(private val context: Context) {
     private val _instrumentBalance = MutableStateFlow(1.0f)
     val instrumentBalance: StateFlow<Float> = _instrumentBalance.asStateFlow()
 
+    var onVerifiedMetadataUpdated: ((Track) -> Unit)? = null
+
     init {
         audioPlayer.onStatusChanged = { status ->
             _playerStatus.value = status
@@ -130,6 +142,23 @@ class PlaybackManager private constructor(private val context: Context) {
         audioPlayer.onTrackCompleted = {
             prebufferedTrackId = null
             handleTrackCompleted()
+        }
+
+        audioPlayer.onMetadataVerified = { verifiedTrack ->
+            _currentTrack.value = verifiedTrack
+            val q = _activeQueue.value
+            val idx = q.indexOfFirst { it.id == verifiedTrack.id }
+            if (idx >= 0) {
+                val updatedQ = q.toMutableList()
+                updatedQ[idx] = verifiedTrack
+                _activeQueue.value = updatedQ
+            }
+            onVerifiedMetadataUpdated?.invoke(verifiedTrack)
+            syncForegroundService()
+        }
+
+        audioPlayer.onPlaybackError = { error ->
+            _playbackError.value = error
         }
 
         updateBitPerfectStatus()
@@ -156,14 +185,30 @@ class PlaybackManager private constructor(private val context: Context) {
         return when (_repeatMode.value) {
             RepeatMode.ONE -> _currentTrack.value
             RepeatMode.ALL -> {
-                val nextIdx = (_currentQueueIndex.value + 1) % q.size
-                q.getOrNull(nextIdx)
+                if (_shuffleEnabled.value && q.size > 1) {
+                    val currentIdx = _currentQueueIndex.value
+                    val candidates = q.indices.filter { it != currentIdx }
+                    if (candidates.isNotEmpty()) q[candidates.random()] else q[0]
+                } else {
+                    val nextIdx = (_currentQueueIndex.value + 1) % q.size
+                    q.getOrNull(nextIdx)
+                }
             }
             RepeatMode.OFF -> {
-                val nextIdx = _currentQueueIndex.value + 1
-                if (nextIdx < q.size) q[nextIdx] else null
+                if (_shuffleEnabled.value && q.size > 1) {
+                    val currentIdx = _currentQueueIndex.value
+                    val candidates = q.indices.filter { it != currentIdx }
+                    if (candidates.isNotEmpty()) q[candidates.random()] else null
+                } else {
+                    val nextIdx = _currentQueueIndex.value + 1
+                    if (nextIdx < q.size) q[nextIdx] else null
+                }
             }
         }
+    }
+
+    fun clearPlaybackError() {
+        _playbackError.value = null
     }
 
     fun setGaplessEnabled(enabled: Boolean) {
@@ -171,10 +216,18 @@ class PlaybackManager private constructor(private val context: Context) {
         prefs.edit().putBoolean(KEY_GAPLESS, enabled).apply()
     }
 
-    fun setAutoResumeEnabled(enabled: Boolean) {
-        _isAutoResumeEnabled.value = enabled
+    fun setRestoreSessionEnabled(enabled: Boolean) {
+        _isRestoreSessionEnabled.value = enabled
+        prefs.edit().putBoolean(KEY_RESTORE_SESSION, enabled).apply()
+    }
+
+    fun setResumeAfterInterruptionEnabled(enabled: Boolean) {
+        _isResumeAfterInterruptionEnabled.value = enabled
+        prefs.edit().putBoolean(KEY_RESUME_INTERRUPTION, enabled).apply()
         prefs.edit().putBoolean(KEY_AUTO_RESUME, enabled).apply()
     }
+
+    fun setAutoResumeEnabled(enabled: Boolean) = setResumeAfterInterruptionEnabled(enabled)
 
     fun setActiveQueue(queueId: String, tracks: List<Track>, startIndex: Int = 0) {
         _activeQueueId.value = queueId
@@ -381,6 +434,19 @@ class PlaybackManager private constructor(private val context: Context) {
         if ((_vocalBalance.value != 1.0f || _instrumentBalance.value != 1.0f) && !_dspEnabled.value) {
             toggleDspEnabled(true)
         }
+        updateBitPerfectStatus()
+    }
+
+    fun resetDsp() {
+        dspPipeline.reset()
+        _dspEnabled.value = false
+        _preampGainDb.value = 0.0f
+        _hasClipped.value = false
+        _graphicGains.value = FloatArray(10) { 0f }
+        _vocalFocusMode.value = CenterChannelProcessor.MODE_OFF
+        _vocalFocusAmount.value = 0.0f
+        _vocalBalance.value = 1.0f
+        _instrumentBalance.value = 1.0f
         updateBitPerfectStatus()
     }
 

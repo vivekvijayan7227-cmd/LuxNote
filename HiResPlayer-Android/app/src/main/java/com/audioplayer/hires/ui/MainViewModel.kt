@@ -15,6 +15,7 @@ import com.audioplayer.hires.audio.UsbDacInfo
 import com.audioplayer.hires.data.AudioLibraryRepository
 import com.audioplayer.hires.data.DiagnosticsManager
 import com.audioplayer.hires.data.DiagnosticsReport
+import com.audioplayer.hires.data.ScanResult
 import com.audioplayer.hires.lyrics.LrcParser
 import com.audioplayer.hires.model.*
 import com.audioplayer.hires.playback.HiResAudioService
@@ -129,7 +130,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // Settings (Finding 10)
     val isGaplessEnabled: StateFlow<Boolean> get() = playbackManager.isGaplessEnabled
+    val isRestoreSessionEnabled: StateFlow<Boolean> get() = playbackManager.isRestoreSessionEnabled
+    val isResumeAfterInterruptionEnabled: StateFlow<Boolean> get() = playbackManager.isResumeAfterInterruptionEnabled
     val isAutoResumeEnabled: StateFlow<Boolean> get() = playbackManager.isAutoResumeEnabled
+    val playbackError: StateFlow<AudioTrackPlayer.PlaybackError?> get() = playbackManager.playbackError
 
     // Real-Time Spectrum Visualizer (64 bands)
     private val _fftBands = MutableStateFlow(FloatArray(64) { 0.05f })
@@ -168,6 +172,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _queues.value = loadedQueues
                 if (playbackManager.activeQueue.value.isEmpty()) {
                     playbackManager.setActiveQueue(firstQ.id, qTracks, initialIndex)
+                }
+                playbackManager.onVerifiedMetadataUpdated = { verified ->
+                    val currentList = _libraryTracks.value
+                    val idx = currentList.indexOfFirst { it.id == verified.id }
+                    if (idx >= 0) {
+                        val updated = currentList.toMutableList()
+                        updated[idx] = verified
+                        _libraryTracks.value = updated
+                        viewModelScope.launch(Dispatchers.IO) {
+                            repository.saveLibraryAsync(updated)
+                        }
+                    }
                 }
                 registerRealTimeObserver()
                 scanDeviceMusic(showIndicator = false)
@@ -386,22 +402,75 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
 
-            val discoveredTracks = repository.scanAllDeviceMusicAsync()
-            val discoveredMap = discoveredTracks.associateBy { it.id }
+            val scanResult = repository.scanMediaStoreWithResultAsync()
             val currentTracks = _libraryTracks.value
             val context = getApplication<Application>()
 
-            val validTracks = mutableListOf<Track>()
-            val validIds = mutableSetOf<Long>()
+            // If scan encountered an explicit error, DO NOT delete tracks or modify playlists
+            if (scanResult is ScanResult.Failure) {
+                android.util.Log.w("MainViewModel", "Scan failed: ${scanResult.error}. Retaining existing library to prevent data loss.")
+                if (showIndicator) {
+                    withContext(Dispatchers.Main) {
+                        _isImporting.value = false
+                        _importProgress.value = ""
+                    }
+                }
+                return@launch
+            }
 
-            // 1. Reconcile existing tracks against current storage state
+            val discoveredTracks = when (scanResult) {
+                is ScanResult.Success -> scanResult.tracks
+                is ScanResult.Partial -> scanResult.tracks
+                is ScanResult.Failure -> emptyList()
+            }
+
+            // Fallback to direct physical storage if MediaStore returned empty
+            val finalDiscovered = if (discoveredTracks.isEmpty()) {
+                repository.scanDirectStorageFoldersAsync()
+            } else {
+                discoveredTracks
+            }
+
+            // If both returned 0 but we previously had tracks, DO NOT wipe user's library
+            if (finalDiscovered.isEmpty() && currentTracks.isNotEmpty()) {
+                android.util.Log.w("MainViewModel", "Scan returned 0 tracks while library has ${currentTracks.size} tracks. Retaining library snapshot.")
+                if (showIndicator) {
+                    withContext(Dispatchers.Main) {
+                        _isImporting.value = false
+                        _importProgress.value = ""
+                    }
+                }
+                return@launch
+            }
+
+            val discoveredMap = finalDiscovered.associateBy { it.id }
+            val reconciledTracks = mutableListOf<Track>()
+            val processedIds = mutableSetOf<Long>()
+
+            // 1. Reconcile existing tracks: mark missing as isAvailable = false rather than deleting
             for (t in currentTracks) {
+                processedIds.add(t.id)
                 val isMediaStore = t.uriString.startsWith("content://media/")
                 if (isMediaStore) {
-                    if (t.id in discoveredMap) {
-                        validTracks.add(discoveredMap[t.id] ?: t)
-                        validIds.add(t.id)
-                    } // Missing from MediaStore => Pruned!
+                    val fresh = discoveredMap[t.id]
+                    if (fresh != null) {
+                        // Preserve verified metadata if already collected
+                        val preserved = if (t.isMetadataVerified && !fresh.isMetadataVerified) {
+                            fresh.copy(
+                                sampleRate = t.sampleRate,
+                                bitDepth = t.bitDepth,
+                                bitrateKbps = t.bitrateKbps,
+                                isMetadataVerified = true,
+                                isAvailable = true
+                            )
+                        } else {
+                            fresh.copy(isAvailable = true)
+                        }
+                        reconciledTracks.add(preserved)
+                    } else {
+                        // Mark unavailable rather than destructive deletion
+                        reconciledTracks.add(t.copy(isAvailable = false))
+                    }
                 } else {
                     // Check SAF / direct file accessibility
                     val accessible = try {
@@ -414,48 +483,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     } catch (_: Exception) {
                         false
                     }
-                    if (accessible) {
-                        validTracks.add(t)
-                        validIds.add(t.id)
-                    } // Inaccessible => Pruned!
+                    reconciledTracks.add(t.copy(isAvailable = accessible))
                 }
             }
 
             // 2. Add newly discovered tracks
-            for (dt in discoveredTracks) {
-                if (dt.id !in validIds) {
-                    validTracks.add(dt)
-                    validIds.add(dt.id)
+            for (dt in finalDiscovered) {
+                if (dt.id !in processedIds) {
+                    reconciledTracks.add(dt)
+                    processedIds.add(dt.id)
                 }
             }
 
-            val finalTracks = if (validTracks.isEmpty()) discoveredTracks else validTracks
-            repository.saveLibraryAsync(finalTracks)
-
-            // 3. Prune broken references in playlists and queues
-            val prunedTrackIds = currentTracks.map { it.id }.toSet() - validIds
-            if (prunedTrackIds.isNotEmpty()) {
-                val updatedQueues = _queues.value.map { q ->
-                    q.copy(trackIds = q.trackIds.filter { it !in prunedTrackIds })
-                }
-                _queues.value = updatedQueues
-                repository.saveQueuesAsync(updatedQueues)
-
-                val updatedPlaylists = _playlists.value.map { pl ->
-                    pl.copy(trackIds = pl.trackIds.filter { it !in prunedTrackIds })
-                }
-                _playlists.value = updatedPlaylists
-                repository.savePlaylistsAsync(updatedPlaylists)
-            }
+            repository.saveLibraryAsync(reconciledTracks)
 
             withContext(Dispatchers.Main) {
-                _libraryTracks.value = finalTracks
-                _folders.value = repository.extractFolders(finalTracks)
-                if (playbackManager.activeQueue.value.isEmpty() && finalTracks.isNotEmpty()) {
-                    playbackManager.setActiveQueue("queue_1", finalTracks, 0)
+                _libraryTracks.value = reconciledTracks
+                _folders.value = repository.extractFolders(reconciledTracks)
+                if (playbackManager.activeQueue.value.isEmpty() && reconciledTracks.isNotEmpty()) {
+                    playbackManager.setActiveQueue("queue_1", reconciledTracks.filter { it.isAvailable }, 0)
                 }
-                if (playbackManager.currentTrack.value == null && finalTracks.isNotEmpty()) {
-                    loadLyricsForTrack(finalTracks[0])
+                if (playbackManager.currentTrack.value == null && reconciledTracks.isNotEmpty()) {
+                    loadLyricsForTrack(reconciledTracks[0])
                 }
                 if (showIndicator) {
                     _isImporting.value = false
@@ -577,6 +626,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun getFilteredAndSortedTracks(): List<Track> = getFilteredTracks()
+
+    fun getFilteredAlbums(): List<String> {
+        val q = _searchQuery.value.trim().lowercase()
+        val all = _libraryTracks.value.map { it.album }.filter { it.isNotBlank() }.distinct().sorted()
+        return if (q.isBlank()) all else all.filter { it.lowercase().contains(q) }
+    }
+
+    fun getFilteredArtists(): List<String> {
+        val q = _searchQuery.value.trim().lowercase()
+        val all = _libraryTracks.value.map { it.artist }.filter { it.isNotBlank() }.distinct().sorted()
+        return if (q.isBlank()) all else all.filter { it.lowercase().contains(q) }
+    }
+
+    fun getFilteredFolders(): List<MusicFolder> {
+        val q = _searchQuery.value.trim().lowercase()
+        val all = _folders.value
+        return if (q.isBlank()) all else all.filter { it.name.lowercase().contains(q) || it.path.lowercase().contains(q) }
+    }
+
+    fun getFilteredPlaylists(): List<Playlist> {
+        val q = _searchQuery.value.trim().lowercase()
+        val all = _playlists.value
+        return if (q.isBlank()) all else all.filter { it.name.lowercase().contains(q) }
+    }
 
     // Playlists Management
     fun createPlaylist(name: String) {
@@ -810,9 +883,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun resetVocalStudio() = playbackManager.resetVocalStudio()
 
     fun setGaplessEnabled(enabled: Boolean) = playbackManager.setGaplessEnabled(enabled)
+    fun setRestoreSessionEnabled(enabled: Boolean) = playbackManager.setRestoreSessionEnabled(enabled)
+    fun setResumeAfterInterruptionEnabled(enabled: Boolean) = playbackManager.setResumeAfterInterruptionEnabled(enabled)
+    fun setAutoResumeEnabled(enabled: Boolean) = setResumeAfterInterruptionEnabled(enabled)
 
-    fun setAutoResumeEnabled(enabled: Boolean) = playbackManager.setAutoResumeEnabled(enabled)
+    fun clearPlaybackError() = playbackManager.clearPlaybackError()
 
+    fun resetDsp() = playbackManager.resetDsp()
     fun resetClipping() = playbackManager.resetClipping()
 
     fun updateBitPerfectStatus() = playbackManager.updateBitPerfectStatus()

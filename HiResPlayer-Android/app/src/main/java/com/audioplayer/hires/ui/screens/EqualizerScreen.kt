@@ -74,8 +74,19 @@ fun EqualizerScreen(viewModel: MainViewModel) {
                 letterSpacing = 1.sp
             )
 
-            // Master Bypass Switch
+            // Master Bypass Switch and Full Reset
             Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(
+                    onClick = { viewModel.resetDsp() },
+                    modifier = Modifier.size(48.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = "Reset all DSP and EQ to flat",
+                        tint = StudioGold
+                    )
+                }
+                Spacer(modifier = Modifier.width(4.dp))
                 Text(
                     text = if (dspEnabled) "ON" else "BYPASS",
                     color = if (dspEnabled) StudioVuGreen else StudioTextMuted,
@@ -441,16 +452,23 @@ fun ParametricBandEditorCard(
                 ) {
                     Text(text = "Frequency:", color = StudioTextMuted, fontSize = 13.sp, modifier = Modifier.width(80.dp))
                     Slider(
-                        value = freq,
-                        onValueChange = {
-                            freq = it
+                        value = freqToSlider(freq),
+                        onValueChange = { sliderVal ->
+                            freq = sliderToFreq(sliderVal)
                             onUpdate(enabled, type, freq, gain, q)
                         },
-                        valueRange = 20.0f..20000.0f,
+                        valueRange = 0.0f..1.0f,
                         colors = SliderDefaults.colors(thumbColor = StudioAiCyan, activeTrackColor = StudioAiCyan),
                         modifier = Modifier.weight(1f)
                     )
-                    Text(text = "${freq.toInt()} Hz", color = StudioAiCyan, fontSize = 13.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(65.dp), textAlign = TextAlign.End)
+                    Text(
+                        text = if (freq >= 1000f) String.format("%.1f kHz", freq / 1000f) else "${freq.toInt()} Hz",
+                        color = StudioAiCyan,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.width(65.dp),
+                        textAlign = TextAlign.End
+                    )
                 }
 
                 // Gain Control (-18 dB to +18 dB)
@@ -510,4 +528,20 @@ fun ParametricBandEditorCard(
             }
         }
     }
+}
+
+fun freqToSlider(freq: Float): Float {
+    val clamped = freq.coerceIn(20.0f, 20000.0f)
+    return (kotlin.math.log10(clamped / 20.0f) / 3.0f).coerceIn(0.0f, 1.0f)
+}
+
+fun sliderToFreq(x: Float): Float {
+    val clamped = x.coerceIn(0.0f, 1.0f)
+    val f = 20.0f * Math.pow(10.0, (clamped * 3.0)).toFloat()
+    return when {
+        f < 100f -> kotlin.math.round(f)
+        f < 1000f -> kotlin.math.round(f / 5.0f) * 5.0f
+        f < 10000f -> kotlin.math.round(f / 50.0f) * 50.0f
+        else -> kotlin.math.round(f / 100.0f) * 100.0f
+    }.coerceIn(20.0f, 20000.0f)
 }

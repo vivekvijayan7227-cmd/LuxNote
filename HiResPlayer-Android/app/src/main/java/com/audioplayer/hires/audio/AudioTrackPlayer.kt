@@ -59,10 +59,18 @@ class AudioTrackPlayer(
     private var activeDataSourceHandle: DataSourceHandle? = null
     private var fallbackDataSourceHandle: DataSourceHandle? = null
 
+    sealed class PlaybackError {
+        data class UnsupportedEncoding(val encoding: Int, val channels: Int, val details: String) : PlaybackError()
+        data class CodecError(val message: String) : PlaybackError()
+        data class DataSourceError(val uri: String, val message: String) : PlaybackError()
+    }
+
     private var playbackJob: Job? = null
     private var positionUpdaterJob: Job? = null
     private var floatBuffer = FloatArray(8192)
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val playbackDispatcher = Dispatchers.IO.limitedParallelism(1)
 
     private val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
     private var wakeLock: PowerManager.WakeLock? = null
@@ -89,6 +97,12 @@ class AudioTrackPlayer(
     var onStatusChanged: ((PlayerStatus) -> Unit)? = null
     var onPositionChanged: ((Long) -> Unit)? = null
     var onTrackCompleted: (() -> Unit)? = null
+    var onTrackChanged: ((Track) -> Unit)? = null
+    var onMetadataVerified: ((Track) -> Unit)? = null
+    var onPlaybackError: ((PlaybackError) -> Unit)? = null
+
+    val isDspSupported: Boolean
+        get() = !isUsingFallback
 
     fun setSpeed(speed: Float) {
         playbackSpeed = speed.coerceIn(0.25f, 3.0f)
@@ -259,21 +273,139 @@ class AudioTrackPlayer(
         return DataSourceHandle(null, 0L, 0L, if (path.isNotBlank()) path else uriStr, null)
     }
 
-    @Volatile private var prebufferedTrack: Track? = null
-    @Volatile private var prebufferedHandle: DataSourceHandle? = null
+    data class PrebufferedSession(
+        val track: Track,
+        val handle: DataSourceHandle,
+        val extractor: MediaExtractor,
+        val codec: MediaCodec,
+        val sampleRate: Int,
+        val channels: Int,
+        val encoding: Int,
+        val predecodedFloatBuffer: FloatArray,
+        val predecodedFrames: Int
+    ) : Closeable {
+        override fun close() {
+            try { codec.stop() } catch (_: Exception) {}
+            try { codec.release() } catch (_: Exception) {}
+            try { extractor.release() } catch (_: Exception) {}
+            try { handle.close() } catch (_: Exception) {}
+        }
+    }
+
+    @Volatile private var activePrebufferedSession: PrebufferedSession? = null
+
+    fun cancelPrebuffer() {
+        val s = activePrebufferedSession
+        activePrebufferedSession = null
+        scope.launch(playbackDispatcher) {
+            s?.close()
+        }
+    }
 
     /**
-     * Prime next track data source ahead of time for true gapless playback.
+     * Prime next track data source and initial decoded PCM frames ahead of time for true gapless playback.
      */
     fun prepareNextTrack(nextTrack: Track) {
-        scope.launch(Dispatchers.IO) {
+        if (nextTrack.uriString.isBlank() || nextTrack.id == currentTrack?.id) return
+        if (activePrebufferedSession?.track?.id == nextTrack.id) return
+
+        scope.launch(playbackDispatcher) {
             try {
-                prebufferedHandle?.close()
-                prebufferedTrack = nextTrack
-                prebufferedHandle = openDataSource(nextTrack.uriString)
-                Log.d(tag, "Gapless: Pre-buffered next track data source: ${nextTrack.title}")
+                activePrebufferedSession?.close()
+                activePrebufferedSession = null
+
+                val handle = openDataSource(nextTrack.uriString)
+                val extractor = MediaExtractor()
+                var extractorSet = false
+
+                if (handle.fd != null && handle.fd.valid()) {
+                    try {
+                        extractor.setDataSource(handle.fd, handle.offset, handle.length)
+                        extractorSet = true
+                    } catch (_: Exception) {}
+                }
+                if (!extractorSet && !handle.directPath.isNullOrBlank()) {
+                    try {
+                        extractor.setDataSource(handle.directPath)
+                        extractorSet = true
+                    } catch (_: Exception) {}
+                }
+                if (!extractorSet) {
+                    handle.close()
+                    return@launch
+                }
+
+                var audioTrackIdx = -1
+                var mediaFormat: MediaFormat? = null
+                for (i in 0 until extractor.trackCount) {
+                    val f = extractor.getTrackFormat(i)
+                    val mime = f.getString(MediaFormat.KEY_MIME) ?: ""
+                    if (mime.startsWith("audio/")) {
+                        audioTrackIdx = i
+                        mediaFormat = f
+                        break
+                    }
+                }
+                if (audioTrackIdx < 0 || mediaFormat == null) {
+                    extractor.release()
+                    handle.close()
+                    return@launch
+                }
+                extractor.selectTrack(audioTrackIdx)
+
+                val sr = if (mediaFormat.containsKey(MediaFormat.KEY_SAMPLE_RATE)) mediaFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE) else 44100
+                val ch = if (mediaFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) mediaFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT) else 2
+                val enc = if (mediaFormat.containsKey(MediaFormat.KEY_PCM_ENCODING)) mediaFormat.getInteger(MediaFormat.KEY_PCM_ENCODING) else AudioFormat.ENCODING_PCM_16BIT
+                val mime = mediaFormat.getString(MediaFormat.KEY_MIME) ?: ""
+
+                val codec = MediaCodec.createDecoderByType(mime)
+                codec.configure(mediaFormat, null, null, 0)
+                codec.start()
+
+                // Pre-decode initial chunk of PCM into predecoded buffer
+                val tempFloat = FloatArray(8192 * 2)
+                var totalPredecodedFrames = 0
+                val bufInfo = MediaCodec.BufferInfo()
+
+                for (iter in 0 until 10) {
+                    val inIdx = codec.dequeueInputBuffer(2000L)
+                    if (inIdx >= 0) {
+                        val inBuf = codec.getInputBuffer(inIdx)
+                        if (inBuf != null) {
+                            val sz = extractor.readSampleData(inBuf, 0)
+                            if (sz > 0) {
+                                codec.queueInputBuffer(inIdx, 0, sz, extractor.sampleTime, 0)
+                                extractor.advance()
+                            }
+                        }
+                    }
+                    val outIdx = codec.dequeueOutputBuffer(bufInfo, 2000L)
+                    if (outIdx >= 0) {
+                        val outBuf = codec.getOutputBuffer(outIdx)
+                        if (outBuf != null && bufInfo.size > 0 && totalPredecodedFrames < 4096) {
+                            val frames = PcmFormatConverter.convertToStereoFloat(outBuf, enc, ch, tempFloat)
+                            totalPredecodedFrames += frames
+                        }
+                        codec.releaseOutputBuffer(outIdx, false)
+                        if (totalPredecodedFrames >= 2048) break
+                    }
+                }
+
+                val predecodedSlice = tempFloat.copyOf(totalPredecodedFrames * 2)
+                activePrebufferedSession = PrebufferedSession(
+                    track = nextTrack,
+                    handle = handle,
+                    extractor = extractor,
+                    codec = codec,
+                    sampleRate = sr,
+                    channels = ch,
+                    encoding = enc,
+                    predecodedFloatBuffer = predecodedSlice,
+                    predecodedFrames = totalPredecodedFrames
+                )
+                Log.d(tag, "Gapless: Pre-decoded $totalPredecodedFrames frames for next track: ${nextTrack.title}")
             } catch (e: Exception) {
-                Log.w(tag, "Gapless: Failed to pre-buffer next track", e)
+                Log.w(tag, "Gapless: Pre-buffer preparation failed for ${nextTrack.title}", e)
             }
         }
     }
@@ -302,13 +434,22 @@ class AudioTrackPlayer(
         onStatusChanged?.invoke(status)
         acquireWakeLock()
 
-        playbackJob = scope.launch(Dispatchers.IO) {
+        playbackJob = scope.launch(playbackDispatcher) {
             try {
                 oldJob?.join()
             } catch (_: Exception) {}
-            cleanupDecoders()
+            val prebuff = activePrebufferedSession
+            val sessionToUse = if (prebuff != null && prebuff.track.id == track.id) {
+                activePrebufferedSession = null
+                prebuff
+            } else {
+                activePrebufferedSession?.close()
+                activePrebufferedSession = null
+                null
+            }
+            cleanupDecoders(releaseAudioTrack = false)
             if (thisSession == currentSessionId.get()) {
-                decodeAndStream(track, thisSession)
+                decodeAndStream(track, thisSession, sessionToUse)
             }
         }
     }
@@ -348,13 +489,14 @@ class AudioTrackPlayer(
         oldJob?.cancel()
         positionUpdaterJob?.cancel()
         positionUpdaterJob = null
+        cancelPrebuffer()
 
-        scope.launch(Dispatchers.IO) {
+        scope.launch(playbackDispatcher) {
             try {
                 oldJob?.join()
             } catch (_: Exception) {}
             if (thisSession == currentSessionId.get()) {
-                cleanupDecoders()
+                cleanupDecoders(releaseAudioTrack = true)
             }
         }
         releaseWakeLock()
@@ -369,6 +511,7 @@ class AudioTrackPlayer(
         val duration = currentTrack?.durationMs ?: 0L
         currentPositionMs = positionMs.coerceIn(0L, if (duration > 0) duration else Long.MAX_VALUE)
         seekTargetUs = currentPositionMs * 1000L
+        cancelPrebuffer()
 
         try {
             fallbackPlayer?.seekTo(currentPositionMs.toInt())
@@ -377,12 +520,14 @@ class AudioTrackPlayer(
         onPositionChanged?.invoke(currentPositionMs)
     }
 
-    private fun cleanupDecoders() {
-        try {
-            audioTrack?.stop()
-            audioTrack?.release()
-        } catch (_: Exception) {}
-        audioTrack = null
+    private fun cleanupDecoders(releaseAudioTrack: Boolean = true) {
+        if (releaseAudioTrack) {
+            try {
+                audioTrack?.stop()
+                audioTrack?.release()
+            } catch (_: Exception) {}
+            audioTrack = null
+        }
 
         try {
             mediaCodec?.stop()
@@ -494,108 +639,149 @@ class AudioTrackPlayer(
 
     /**
      * Decoding and streaming loop via MediaExtractor + MediaCodec + StudioDspPipeline -> AudioTrack.
+     * Consumes [prebuffered] if primed ahead of time for true gapless playback.
      */
-    private suspend fun decodeAndStream(track: Track, sessionId: Long = 0L) {
-        val extractor = MediaExtractor()
-        mediaExtractor = extractor
+    private suspend fun decodeAndStream(track: Track, sessionId: Long = 0L, prebuffered: PrebufferedSession? = null) {
+        val extractor: MediaExtractor
+        val codec: MediaCodec
+        val handle: DataSourceHandle?
+
+        var streamSampleRate: Int
+        var streamChannels: Int
+        var streamEncoding: Int
+        var mediaFormat: MediaFormat? = null
 
         try {
-            val uriStr = track.uriString
-            var extractorSet = false
-
-            if (uriStr.startsWith("content://")) {
-                try {
-                    extractor.setDataSource(context, Uri.parse(uriStr), null)
-                    extractorSet = true
-                    Log.d(tag, "MediaExtractor setDataSource(context, uri) OK: ${track.title}")
-                } catch (e: Exception) {
-                    Log.w(tag, "MediaExtractor content URI direct failed, trying PFD", e)
-                }
+            if (prebuffered != null) {
+                extractor = prebuffered.extractor
+                codec = prebuffered.codec
+                handle = prebuffered.handle
+                mediaExtractor = extractor
+                mediaCodec = codec
+                activeDataSourceHandle = handle
+                streamSampleRate = prebuffered.sampleRate
+                streamChannels = prebuffered.channels
+                streamEncoding = prebuffered.encoding
+                Log.d(tag, "Gapless: Seamlessly consuming prebuffered decoder for '${track.title}'")
             } else {
-                val cleanPath = if (uriStr.startsWith("file://")) Uri.parse(uriStr).path ?: uriStr.removePrefix("file://") else uriStr
-                val f = File(cleanPath)
-                if (f.exists() && f.canRead()) {
-                    extractor.setDataSource(cleanPath)
-                    extractorSet = true
-                    Log.d(tag, "MediaExtractor setDataSource(path) OK: $cleanPath")
-                }
-            }
+                val resolvedHandle = openDataSource(track.uriString)
+                handle = resolvedHandle
+                activeDataSourceHandle = resolvedHandle
+                extractor = MediaExtractor()
+                mediaExtractor = extractor
 
-            if (!extractorSet) {
-                try {
-                    val pfd = context.contentResolver.openFileDescriptor(Uri.parse(uriStr), "r")
-                    if (pfd != null) {
-                        extractor.setDataSource(pfd.fileDescriptor)
-                        pfd.close()
+                var extractorSet = false
+                if (resolvedHandle.fd != null && resolvedHandle.fd.valid()) {
+                    try {
+                        extractor.setDataSource(resolvedHandle.fd, resolvedHandle.offset, resolvedHandle.length)
                         extractorSet = true
-                        Log.d(tag, "MediaExtractor setDataSource(PFD) OK")
+                    } catch (e: Exception) {
+                        Log.w(tag, "MediaExtractor FD setDataSource failed, trying URI", e)
                     }
+                }
+                if (!extractorSet && !resolvedHandle.directPath.isNullOrBlank()) {
+                    try {
+                        if (resolvedHandle.directPath.startsWith("content://")) {
+                            extractor.setDataSource(context, Uri.parse(resolvedHandle.directPath), null)
+                        } else {
+                            extractor.setDataSource(resolvedHandle.directPath)
+                        }
+                        extractorSet = true
+                    } catch (e: Exception) {
+                        Log.w(tag, "MediaExtractor direct path setDataSource failed", e)
+                    }
+                }
+
+                if (!extractorSet) {
+                    val errMsg = "Cannot resolve data source for: ${track.uriString}"
+                    withContext(Dispatchers.Main) {
+                        onPlaybackError?.invoke(PlaybackError.DataSourceError(track.uriString, errMsg))
+                    }
+                    throw IOException(errMsg)
+                }
+
+                var audioTrackIndex = -1
+                for (i in 0 until extractor.trackCount) {
+                    val f = extractor.getTrackFormat(i)
+                    val m = f.getString(MediaFormat.KEY_MIME) ?: ""
+                    if (m.startsWith("audio/")) {
+                        audioTrackIndex = i
+                        mediaFormat = f
+                        break
+                    }
+                }
+
+                if (audioTrackIndex < 0 || mediaFormat == null) {
+                    Log.w(tag, "No audio stream found via MediaExtractor: ${track.title}. Falling back to MediaPlayer.")
+                    cleanupDecoders(releaseAudioTrack = false)
+                    withContext(Dispatchers.Main) {
+                        playWithMediaPlayer(track)
+                    }
+                    return
+                }
+
+                extractor.selectTrack(audioTrackIndex)
+
+                streamSampleRate = if (mediaFormat.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
+                    mediaFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                } else 44100
+
+                streamChannels = if (mediaFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
+                    mediaFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                } else 2
+
+                val mime = mediaFormat.getString(MediaFormat.KEY_MIME) ?: ""
+                codec = try {
+                    MediaCodec.createDecoderByType(mime)
                 } catch (e: Exception) {
-                    Log.w(tag, "MediaExtractor PFD failed", e)
+                    Log.w(tag, "No native decoder for $mime. Falling back to MediaPlayer.", e)
+                    cleanupDecoders(releaseAudioTrack = false)
+                    withContext(Dispatchers.Main) {
+                        playWithMediaPlayer(track)
+                    }
+                    return
                 }
-            }
 
-            if (!extractorSet) {
-                throw IOException("Cannot resolve data source for: ${track.uriString}")
-            }
+                mediaCodec = codec
+                isUsingFallback = false
+                codec.configure(mediaFormat, null, null, 0)
+                codec.start()
 
-            var audioTrackIndex = -1
-            var mediaFormat: MediaFormat? = null
-            for (i in 0 until extractor.trackCount) {
-                val f = extractor.getTrackFormat(i)
-                val m = f.getString(MediaFormat.KEY_MIME) ?: ""
-                if (m.startsWith("audio/")) {
-                    audioTrackIndex = i
-                    mediaFormat = f
-                    break
+                streamEncoding = if (mediaFormat.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
+                    mediaFormat.getInteger(MediaFormat.KEY_PCM_ENCODING)
+                } else {
+                    AudioFormat.ENCODING_PCM_16BIT
                 }
-            }
-
-            if (audioTrackIndex < 0 || mediaFormat == null) {
-                Log.w(tag, "No audio stream found in track via MediaExtractor: ${track.title}. Falling back to MediaPlayer.")
-                cleanupDecoders()
-                withContext(Dispatchers.Main) {
-                    playWithMediaPlayer(track)
-                }
-                return
-            }
-
-            extractor.selectTrack(audioTrackIndex)
-
-            var streamSampleRate = if (mediaFormat.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
-                mediaFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-            } else 44100
-
-            var streamChannels = if (mediaFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
-                mediaFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-            } else 2
-
-            val mime = mediaFormat.getString(MediaFormat.KEY_MIME) ?: ""
-            val codec = try {
-                MediaCodec.createDecoderByType(mime)
-            } catch (e: Exception) {
-                Log.w(tag, "No native decoder for $mime. Falling back to MediaPlayer.", e)
-                cleanupDecoders()
-                withContext(Dispatchers.Main) {
-                    playWithMediaPlayer(track)
-                }
-                return
-            }
-
-            mediaCodec = codec
-            isUsingFallback = false
-            codec.configure(mediaFormat, null, null, 0)
-            codec.start()
-
-            var streamEncoding = if (mediaFormat.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
-                mediaFormat.getInteger(MediaFormat.KEY_PCM_ENCODING)
-            } else {
-                AudioFormat.ENCODING_PCM_16BIT
             }
 
             sampleRate = streamSampleRate
             dspPipeline.setSampleRate(streamSampleRate.toFloat())
             createAudioTrack(streamSampleRate)
+
+            // Emit verified real stream container metadata
+            val bitDepth = when (streamEncoding) {
+                AudioFormat.ENCODING_PCM_FLOAT -> 32
+                AudioFormat.ENCODING_PCM_24BIT_PACKED -> 24
+                AudioFormat.ENCODING_PCM_32BIT -> 32
+                AudioFormat.ENCODING_PCM_8BIT -> 8
+                else -> 16
+            }
+            val bitrateKbps = if (mediaFormat != null && mediaFormat.containsKey(MediaFormat.KEY_BIT_RATE)) {
+                mediaFormat.getInteger(MediaFormat.KEY_BIT_RATE) / 1000
+            } else {
+                ((streamSampleRate.toLong() * bitDepth * streamChannels) / 1000L).toInt()
+            }
+            val verifiedTrack = track.copy(
+                sampleRate = streamSampleRate,
+                bitDepth = bitDepth,
+                bitrateKbps = bitrateKbps,
+                isMetadataVerified = true
+            )
+            currentTrack = verifiedTrack
+            withContext(Dispatchers.Main) {
+                onMetadataVerified?.invoke(verifiedTrack)
+                onTrackChanged?.invoke(verifiedTrack)
+            }
 
             val bufferInfo = MediaCodec.BufferInfo()
             var isInputEof = false
@@ -604,6 +790,35 @@ class AudioTrackPlayer(
             var totalFramesWritten: Long = 0L
             var startOffsetMs: Long = 0L
             var baseHeadPosition: Long = (audioTrack?.playbackHeadPosition?.toLong() ?: 0L) and 0xFFFFFFFFL
+
+            // If we have predecoded frames from gapless preparation, stream them immediately
+            if (prebuffered != null && prebuffered.predecodedFrames > 0) {
+                val preFrames = prebuffered.predecodedFrames
+                val totalPreSamples = preFrames * 2
+                dspPipeline.processInterleavedStereo(prebuffered.predecodedFloatBuffer, preFrames)
+
+                var samplesWritten = 0
+                if (isFloatTrack) {
+                    while (samplesWritten < totalPreSamples && currentCoroutineContext().isActive && status != PlayerStatus.STOPPED && sessionId == currentSessionId.get()) {
+                        val count = totalPreSamples - samplesWritten
+                        val written = audioTrack?.write(prebuffered.predecodedFloatBuffer, samplesWritten, count, AudioTrack.WRITE_BLOCKING) ?: 0
+                        if (written > 0) samplesWritten += written else break
+                    }
+                } else {
+                    if (shortBuffer.size < totalPreSamples) {
+                        shortBuffer = ShortArray(totalPreSamples)
+                    }
+                    for (i in 0 until totalPreSamples) {
+                        shortBuffer[i] = (prebuffered.predecodedFloatBuffer[i].coerceIn(-1.0f, 1.0f) * 32767.0f).toInt().toShort()
+                    }
+                    while (samplesWritten < totalPreSamples && currentCoroutineContext().isActive && status != PlayerStatus.STOPPED && sessionId == currentSessionId.get()) {
+                        val count = totalPreSamples - samplesWritten
+                        val written = audioTrack?.write(shortBuffer, samplesWritten, count, AudioTrack.WRITE_BLOCKING) ?: 0
+                        if (written > 0) samplesWritten += written else break
+                    }
+                }
+                totalFramesWritten += samplesWritten / 2
+            }
 
             while (currentCoroutineContext().isActive && status != PlayerStatus.STOPPED && sessionId == currentSessionId.get()) {
                 if (status == PlayerStatus.PAUSED) {
@@ -671,7 +886,7 @@ class AudioTrackPlayer(
                                 floatBuffer = FloatArray(requiredFloatCount)
                             }
 
-                            // Format-aware PCM conversion (16-bit, float, 24-bit, 32-bit int, 8-bit, multichannel fold-down)
+                            // Format-aware PCM conversion (16-bit, float, 24-bit, 32-bit int, 8-bit, multichannel ITU-R BS.775 fold-down)
                             val convertedFrames = PcmFormatConverter.convertToStereoFloat(
                                 outBuffer,
                                 streamEncoding,
@@ -769,6 +984,25 @@ class AudioTrackPlayer(
                         streamEncoding = newFormat.getInteger(MediaFormat.KEY_PCM_ENCODING)
                         Log.d(tag, "Format changed: encoding=$streamEncoding, channels=$streamChannels, rate=$streamSampleRate")
                     }
+                    val updatedDepth = when (streamEncoding) {
+                        AudioFormat.ENCODING_PCM_FLOAT -> 32
+                        AudioFormat.ENCODING_PCM_24BIT_PACKED -> 24
+                        AudioFormat.ENCODING_PCM_32BIT -> 32
+                        AudioFormat.ENCODING_PCM_8BIT -> 8
+                        else -> 16
+                    }
+                    val updatedBitrate = ((streamSampleRate.toLong() * updatedDepth * streamChannels) / 1000L).toInt()
+                    val updatedTrack = track.copy(
+                        sampleRate = streamSampleRate,
+                        bitDepth = updatedDepth,
+                        bitrateKbps = updatedBitrate,
+                        isMetadataVerified = true
+                    )
+                    currentTrack = updatedTrack
+                    withContext(Dispatchers.Main) {
+                        onMetadataVerified?.invoke(updatedTrack)
+                        onTrackChanged?.invoke(updatedTrack)
+                    }
                     didWork = true
                 }
 
@@ -784,9 +1018,10 @@ class AudioTrackPlayer(
                     val currentHead = (audioTrack?.playbackHeadPosition?.toLong() ?: 0L) and 0xFFFFFFFFL
                     val deltaHead = (currentHead - baseHeadPosition).coerceAtLeast(0L)
                     if (deltaHead >= framesToDrain) break
-                    delay(30)
+                    delay(20)
                 }
-                cleanupDecoders()
+                // Retain audioTrack for gapless handoff to next candidate track
+                cleanupDecoders(releaseAudioTrack = false)
                 withContext(Dispatchers.Main) {
                     onTrackCompleted?.invoke()
                 }
@@ -794,15 +1029,23 @@ class AudioTrackPlayer(
 
         } catch (e: CancellationException) {
             // Normal coroutine cancellation
+        } catch (e: PcmFormatConverter.UnsupportedPcmEncodingException) {
+            Log.e(tag, "Unsupported PCM encoding: ${e.message}", e)
+            cleanupDecoders(releaseAudioTrack = false)
+            withContext(Dispatchers.Main) {
+                onPlaybackError?.invoke(PlaybackError.UnsupportedEncoding(e.encoding, e.channelCount, e.message ?: "Unsupported PCM"))
+                playWithMediaPlayer(track)
+            }
         } catch (e: Exception) {
             Log.w(tag, "Direct AudioTrack decoder error, switching to MediaPlayer fallback", e)
-            cleanupDecoders()
+            cleanupDecoders(releaseAudioTrack = false)
             withContext(Dispatchers.Main) {
+                onPlaybackError?.invoke(PlaybackError.CodecError(e.message ?: "Decoder error"))
                 playWithMediaPlayer(track)
             }
         } finally {
-            if (fallbackPlayer == null) {
-                cleanupDecoders()
+            if (fallbackPlayer == null && status == PlayerStatus.STOPPED) {
+                cleanupDecoders(releaseAudioTrack = true)
             }
         }
     }

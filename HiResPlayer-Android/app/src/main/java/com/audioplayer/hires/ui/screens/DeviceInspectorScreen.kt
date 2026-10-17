@@ -166,7 +166,7 @@ fun DeviceInspectorScreen(viewModel: MainViewModel) {
                                     Text(
                                         text = if (p.isGranted) "GRANTED" else "DENIED",
                                         color = if (p.isGranted) StudioColors.Success else StudioColors.Error,
-                                        fontSize = 9.sp,
+                                        fontSize = 11.sp,
                                         fontWeight = FontWeight.Bold,
                                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                     )
@@ -174,27 +174,27 @@ fun DeviceInspectorScreen(viewModel: MainViewModel) {
                             }
                         }
 
-                        // Direct Storage Action Button
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Button(
-                                onClick = {
-                                    try {
-                                        val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
-                                            data = Uri.parse("package:${context.packageName}")
-                                        }
-                                        context.startActivity(intent)
-                                    } catch (_: Exception) {
-                                        val intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
-                                        context.startActivity(intent)
+                        // Standard Media & Storage Permissions Settings Button
+                        Spacer(modifier = Modifier.height(10.dp))
+                        OutlinedButton(
+                            onClick = {
+                                try {
+                                    val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                        data = Uri.parse("package:${context.packageName}")
                                     }
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = StudioColors.Gold),
-                                shape = RoundedCornerShape(8.dp),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text("Enable All Files Access (Direct Storage Mode)", color = StudioColors.Background, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                            }
+                                    context.startActivity(intent)
+                                } catch (_: Exception) {
+                                    val intent = Intent(Settings.ACTION_SETTINGS)
+                                    context.startActivity(intent)
+                                }
+                            },
+                            border = androidx.compose.foundation.BorderStroke(1.dp, StudioColors.Gold),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth().height(48.dp)
+                        ) {
+                            Icon(Icons.Default.Settings, contentDescription = null, tint = StudioColors.Gold, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Manage Storage & App Permissions", color = StudioColors.Gold, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }

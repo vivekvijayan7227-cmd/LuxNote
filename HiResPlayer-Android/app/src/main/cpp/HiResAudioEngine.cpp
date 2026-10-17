@@ -225,7 +225,7 @@ void HiResAudioEngine::recomputeVocal(DspSnapshot& snap) {
 void HiResAudioEngine::commitSnapshot() {
     m_snapshots[m_writeIdx] = m_staging;
     m_writeIdx = m_sharedIdx.exchange(m_writeIdx, std::memory_order_acq_rel);
-    m_hasNewSnapshot.store(true, std::memory_order_release);
+    m_commitSeq.fetch_add(1, std::memory_order_release);
 }
 
 void HiResAudioEngine::processInterleavedStereo(float* buffer, int frameCount) {
@@ -236,10 +236,11 @@ void HiResAudioEngine::processInterleavedStereo(float* buffer, int frameCount) {
     bool clipped = false;
     bool dsp = m_dspEnabled.load(std::memory_order_relaxed);
 
-    // Lock-free acquisition of newest DSP parameter snapshot via triple-buffering
-    if (m_hasNewSnapshot.load(std::memory_order_acquire)) {
+    // Lock-free acquisition of newest DSP parameter snapshot via sequence-versioned triple-buffering
+    uint64_t currentSeq = m_commitSeq.load(std::memory_order_acquire);
+    if (currentSeq != m_readSeq) {
         m_readIdx = m_sharedIdx.exchange(m_readIdx, std::memory_order_acq_rel);
-        m_hasNewSnapshot.store(false, std::memory_order_release);
+        m_readSeq = currentSeq;
     }
     const auto& snap = m_snapshots[m_readIdx];
 

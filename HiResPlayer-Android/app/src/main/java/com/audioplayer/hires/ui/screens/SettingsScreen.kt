@@ -27,7 +27,8 @@ fun SettingsScreen(viewModel: MainViewModel) {
     val libraryTracks by viewModel.libraryTracks.collectAsState()
     val queues by viewModel.queues.collectAsState()
     val isGaplessEnabled by viewModel.isGaplessEnabled.collectAsState()
-    val isAutoResumeEnabled by viewModel.isAutoResumeEnabled.collectAsState()
+    val isRestoreSessionEnabled by viewModel.isRestoreSessionEnabled.collectAsState()
+    val isResumeAfterInterruptionEnabled by viewModel.isResumeAfterInterruptionEnabled.collectAsState()
 
     Column(
         modifier = Modifier
@@ -109,10 +110,18 @@ fun SettingsScreen(viewModel: MainViewModel) {
                 HorizontalDivider(color = StudioColors.Divider, thickness = 1.dp)
                 SettingsSwitchRow(
                     icon = Icons.Default.Restore,
-                    title = "Automatic Resume",
+                    title = "Restore Last Session",
                     subtitle = "Restore queue and position when app reopens",
-                    checked = isAutoResumeEnabled,
-                    onCheckedChange = { viewModel.setAutoResumeEnabled(it) }
+                    checked = isRestoreSessionEnabled,
+                    onCheckedChange = { viewModel.setRestoreSessionEnabled(it) }
+                )
+                HorizontalDivider(color = StudioColors.Divider, thickness = 1.dp)
+                SettingsSwitchRow(
+                    icon = Icons.Default.PhoneInTalk,
+                    title = "Resume After Interruption",
+                    subtitle = "Automatically resume playback after phone calls or alarms",
+                    checked = isResumeAfterInterruptionEnabled,
+                    onCheckedChange = { viewModel.setResumeAfterInterruptionEnabled(it) }
                 )
             }
         }
