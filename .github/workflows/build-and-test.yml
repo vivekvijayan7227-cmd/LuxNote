@@ -1,0 +1,51 @@
+name: Build & Verify LuxNote
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    name: Unit Tests & Build Verification
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Set up Android NDK & CMake
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y cmake ninja-build
+          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;26.1.10909125" "cmake;3.22.1"
+
+      - name: Grant Execute Permission to Gradlew
+        run: chmod +x ./HiResPlayer-Android/gradlew
+
+      - name: Run Unit & Parity Tests
+        run: |
+          cd HiResPlayer-Android
+          ./gradlew testDebugUnitTest --no-daemon --stacktrace
+
+      - name: Assemble Internal Test APK (Signed with Test Key)
+        run: |
+          cd HiResPlayer-Android
+          ./gradlew assembleInternalTest --no-daemon
+
+      - name: Verify APK Generation & Compute Checksum
+        run: |
+          APK_PATH=$(find HiResPlayer-Android/app/build/outputs/apk/internalTest -name "*.apk" | head -n 1)
+          if [ -z "$APK_PATH" ] || [ ! -f "$APK_PATH" ]; then
+            echo "::error::Internal test APK not found!"
+            exit 1
+          fi
+          echo "Found APK at: $APK_PATH"
+          sha256sum "$APK_PATH"

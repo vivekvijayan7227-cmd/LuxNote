@@ -1,55 +1,91 @@
 @echo off
-setlocal
+setlocal enabledelayedexpansion
 echo ========================================================
-echo  LuxNote (Android Edition) - Build Tool
+echo  LuxNote (Android Edition) - Build & Verification Tool
 echo ========================================================
 
-@rem Discover JAVA_HOME if not already set in environment
-if "%JAVA_HOME%"=="" (
-    if exist "C:\Users\Vivek\AppData\Local\Programs\jdk-21" (
-        set "JAVA_HOME=C:\Users\Vivek\AppData\Local\Programs\jdk-21"
+@rem Portable Java discovery: check JAVA_HOME first, then standard paths
+if not defined JAVA_HOME (
+    for %%p in (
+        "%ProgramFiles%\Java\jdk-21"
+        "%ProgramFiles%\Eclipse Adoptium\jdk-21"
+        "%LOCALAPPDATA%\Programs\jdk-21"
+        "%ProgramFiles%\Android\Android Studio\jbr"
+    ) do (
+        if exist "%%~p\bin\javac.exe" (
+            set "JAVA_HOME=%%~p"
+            goto :found_java
+        )
     )
 )
+:found_java
 
 if defined JAVA_HOME (
     set "PATH=%JAVA_HOME%\bin;%PATH%"
+) else (
+    where javac.exe >nul 2>&1
+    if !ERRORLEVEL! NEQ 0 (
+        echo [WARNING] JAVA_HOME is not set and javac not found on PATH.
+    )
 )
 
 cd /d "%~dp0HiResPlayer-Android"
 
 echo.
-echo [1/3] Running Unit Tests (DSP Engine, MediaStore Observer, Storage Resolver)...
-call gradlew.bat testDebugUnitTest
-if %ERRORLEVEL% NEQ 0 (
+echo [1/4] Running Unit & Parity Tests (DSP Engine, MediaStore, Storage)...
+call gradlew.bat testDebugUnitTest --no-daemon
+if !ERRORLEVEL! NEQ 0 (
     echo [ERROR] Unit tests failed!
-    exit /b %ERRORLEVEL%
+    exit /b !ERRORLEVEL!
 )
 
 echo.
-echo [2/3] Assembling LuxNote Release APK...
-call gradlew.bat assembleRelease
-if %ERRORLEVEL% NEQ 0 (
-    echo [ERROR] Release APK assembly failed!
-    exit /b %ERRORLEVEL%
+echo [2/4] Assembling LuxNote Production Release APK...
+call gradlew.bat assembleRelease --no-daemon
+if !ERRORLEVEL! NEQ 0 (
+    echo [ERROR] Release APK assembly failed! Ensure keystore.properties or environment credentials are set.
+    exit /b !ERRORLEVEL!
 )
 
-echo.
-echo [3/4] Verifying and Copying Production Release APK...
 if not exist "app\build\outputs\apk\release\app-release.apk" (
-    echo [ERROR] Signed release APK not found!
-    echo [ERROR] Release builds must be properly signed with production credentials.
+    echo [ERROR] Signed release APK not found at app\build\outputs\apk\release\app-release.apk!
     exit /b 1
+)
+
+echo.
+echo [3/4] Performing Cryptographic Signature & Integrity Audit...
+@rem Locate apksigner if available in Android SDK
+set "APKSIGNER_BIN="
+if defined ANDROID_HOME (
+    for /f "delims=" %%f in ('dir /b /s "%ANDROID_HOME%\build-tools\*apksigner.bat" 2^>nul') do (
+        set "APKSIGNER_BIN=%%f"
+        goto :found_signer
+    )
+)
+if not defined APKSIGNER_BIN (
+    for /f "delims=" %%f in ('dir /b /s "%LOCALAPPDATA%\Android\Sdk\build-tools\*apksigner.bat" 2^>nul') do (
+        set "APKSIGNER_BIN=%%f"
+        goto :found_signer
+    )
+)
+:found_signer
+
+if defined APKSIGNER_BIN (
+    echo Auditing signature using !APKSIGNER_BIN!...
+    call "!APKSIGNER_BIN!" verify --verbose "app\build\outputs\apk\release\app-release.apk"
+    if !ERRORLEVEL! NEQ 0 (
+        echo [ERROR] APK signature verification failed!
+        exit /b !ERRORLEVEL!
+    )
+    echo [OK] APK signature cryptographically verified.
+) else (
+    echo [INFO] apksigner not located in standard SDK path; skipping local apksigner check.
 )
 
 copy /Y "app\build\outputs\apk\release\app-release.apk" "%~dp0LuxNote.apk" >nul
-if %ERRORLEVEL% NEQ 0 (
+if !ERRORLEVEL! NEQ 0 (
     echo [ERROR] Failed to copy production APK to root directory!
-    exit /b %ERRORLEVEL%
-)
-
-if not exist "%~dp0LuxNote.apk" (
-    echo [ERROR] Verified LuxNote.apk does not exist at destination!
-    exit /b 1
+    exit /b !ERRORLEVEL!
 )
 
 echo.

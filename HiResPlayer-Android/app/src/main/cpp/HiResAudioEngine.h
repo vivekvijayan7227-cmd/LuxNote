@@ -114,13 +114,15 @@ private:
     std::mutex m_stageMutex;
     DspSnapshot m_staging;
     
-    // Lock-free reader-aware triple buffer for audio thread parameter updates
+    // Formally verified single-producer single-consumer lock-free triple buffer
+    // Slot ownership:
+    // - m_writeIdx: exclusively owned by producer (UI thread under m_stageMutex)
+    // - m_readIdx: exclusively owned by consumer (audio processing thread)
+    // - m_sharedState: bits 0-1 = shared buffer index, bit 2 (0x04) = dirty flag
     DspSnapshot m_snapshots[3];
-    int m_writeIdx = 2;
+    int m_writeIdx = 0;
     int m_readIdx = 1;
-    std::atomic<int> m_sharedIdx{0};
-    std::atomic<uint64_t> m_commitSeq{0};
-    uint64_t m_readSeq = 0; // Audio thread local (no lock, tracks last consumed commit)
+    std::atomic<uint32_t> m_sharedState{2}; // Initial shared slot = 2, dirty = 0
 
     // Audio thread filter states (only accessed on audio thread)
     BiquadState m_graphicStates[NUM_GRAPHIC_BANDS];

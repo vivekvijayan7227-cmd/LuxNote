@@ -35,34 +35,39 @@ class PreampGainStage {
 
     fun getPeakLevel(): Float = peakLevel
 
-    fun processFrame(samples: FloatArray, offset: Int) {
-        var l = samples[offset] * linearGain
-        var r = samples[offset + 1] * linearGain
+    fun applyGain(samples: FloatArray, offset: Int) {
+        samples[offset] *= linearGain
+        samples[offset + 1] *= linearGain
+    }
+
+    fun applyLimiter(samples: FloatArray, offset: Int) {
+        var l = samples[offset]
+        var r = samples[offset + 1]
 
         val maxAmp = max(abs(l), abs(r))
         if (maxAmp > peakLevel) {
             peakLevel = maxAmp
         }
 
-        // Soft-knee limiter: if sample exceeds 0.95, apply smooth cubic soft-clipping
-        // to prevent harsh DAC intersample overload
         if (maxAmp > 0.95f) {
             lastClipTimestampMs = System.currentTimeMillis()
             l = softClip(l)
             r = softClip(r)
+            samples[offset] = l
+            samples[offset + 1] = r
         }
-
-        samples[offset] = l
-        samples[offset + 1] = r
     }
 
-    private fun softClip(x: Float): Float {
-        return if (x > 1.0f) {
-            (2.0f / 3.0f) + (1.0f / 3.0f) * (1.0f - exp(-(x - 1.0f)))
-        } else if (x < -1.0f) {
-            -((2.0f / 3.0f) + (1.0f / 3.0f) * (1.0f - exp(-(-x - 1.0f))))
-        } else {
-            x - (x * x * x) / 3.0f
+    fun processFrame(samples: FloatArray, offset: Int) {
+        applyGain(samples, offset)
+        applyLimiter(samples, offset)
+    }
+
+    fun softClip(x: Float): Float {
+        return when {
+            x > 0.95f -> (0.95f + 0.05f * tanh((x - 0.95f) / 0.05f)).toFloat()
+            x < -0.95f -> (-0.95f + 0.05f * tanh((x + 0.95f) / 0.05f)).toFloat()
+            else -> x
         }
     }
 }

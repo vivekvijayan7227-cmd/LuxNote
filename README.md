@@ -2,11 +2,12 @@
 ### Studio-Grade Audiophile Local Music Player for Android with Native C++20 DSP & Obsidian Aesthetics
 
 [![Platform](https://img.shields.io/badge/Platform-Android_8.0+_(API_26+)-3DDC84?logo=android&logoColor=white)](https://android.com)
-[![Architecture](https://img.shields.io/badge/Architecture-Kotlin_+_C++20_SIMD-blue?logo=kotlin&logoColor=white)](https://kotlinlang.org)
+[![Architecture](https://img.shields.io/badge/Architecture-Kotlin_+_C++20_NEON-blue?logo=kotlin&logoColor=white)](https://kotlinlang.org)
+[![Build & Verify](https://github.com/vivekvijayan7227-cmd/LuxNote/actions/workflows/build-and-test.yml/badge.svg)](https://github.com/vivekvijayan7227-cmd/LuxNote/actions)
 [![Offline](https://img.shields.io/badge/Security-100%25_Offline_(Zero_Internet)-success)](https://github.com)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-**LuxNote** is an ultra-premium, privacy-first local music player for Android phones, tablets, and dedicated Digital Audio Players (DAPs: FiiO, Sony Walkman, Astell&Kern, HiBy). Engineered with a zero-copy local storage engine, a real-time `MediaStore` filesystem observer, a native 64-bit C++20 SIMD DSP core, and the signature **Obsidian Studio** design system.
+**LuxNote** is an ultra-premium, privacy-first local music player for Android phones, tablets, and dedicated Digital Audio Players (DAPs: FiiO, Sony Walkman, Astell&Kern, HiBy). Engineered with a zero-copy local storage engine, a real-time `MediaStore` filesystem observer, a native 64-bit C++20 DSP core with ARM NEON SIMD intrinsics, and the signature **Obsidian Studio** design system.
 
 ---
 
@@ -21,7 +22,7 @@ Built using Jetpack Compose following strict studio-grade design principles:
 | **Deep Navy** | `#101521` | Navigation bars, elevated panels |
 | **Studio Slate** | `#182033` | Elevated surfaces, cards, dialogs, sheets (20%) |
 | **Champagne Gold** | `#F5C76A` | Primary actions, play/pause FAB, active highlights (10%) |
-| **Electric Blue** | `#67B7FF` | Audio visualization, bit-perfect indicators, technical metadata |
+| **Electric Blue** | `#67B7FF` | Audio visualization, format badges, technical metadata |
 | **Pearl White** | `#E8ECF4` | Crisp, high-contrast primary typography |
 | **Secondary Text** | `#A0A9BA` | Artists, metadata, album details |
 | **Muted Text** | `#737F93` | Durations, disabled labels, timestamps |
@@ -46,18 +47,19 @@ Built using Jetpack Compose following strict studio-grade design principles:
 * **Dual Partial WakeLocks:** Service and playback engine prevent CPU sleep while audio is streaming.
 
 ### 4. Real Compiled Native C++20 DSP Core (`libhires_audio.so`)
-* Compiled directly into APK via Android NDK (`26.1.10909125`) and CMake (`3.22.1`) for `arm64-v8a` and `x86_64`.
-* **32-Bit Float SIMD Biquad Cascade:** Direct Form II Transposed 10-band ISO equalizer filter.
-* **Phase-Coherent Mid/Side Processor:** Real-time vocal separation and center-channel enhancement.
+* Compiled directly into APK via Android NDK (`26.1.10909125`) and CMake (`3.22.1`) with `-O3 -ffast-math -fvectorize` and ARM NEON intrinsics on `arm64-v8a`.
+* **Canonical Wait-Free Triple Buffer:** Single-producer single-consumer parameter state packing guaranteeing lock-free, zero-allocation updates without reader/writer races.
+* **Direct Form II Transposed Biquads:** 10-band ISO equalizer filter with 100% mathematical parity against the managed Kotlin fallback.
+* **Phase-Coherent Mid/Side Processor:** Real-time acoustic center-channel extraction and field balance.
 * **1024-Point Radix-2 FFT Analyzer:** Real-time 60 FPS spectrum analyzer.
-* **Cubic Soft-Knee Limiter:** Preamp gain stage preventing digital clipping.
+* **Smooth Soft Limiter:** Tanh saturation knee at 0.95 preventing digital clipping.
 
-### 5. Hardware USB DAC & Bit-Perfect Audit
-* Inspects USB Audio Class (`USB_CLASS_AUDIO` 0x01), AudioStreaming subclass (`USB_SUBCLASS_AUDIOSTREAMING` 0x02 - UAC2), and Isochronous endpoints.
-* 7-point bit-perfect audio verification gate auditing sample rate locking and zero-resampling enforcement.
+### 5. Hardware USB DAC & Audio Routing Inspector
+* Queries USB Audio Class (`USB_CLASS_AUDIO` 0x01), AudioStreaming subclass (`USB_SUBCLASS_AUDIOSTREAMING` 0x02 - UAC2), and isochronous endpoints.
+* Truthfully reports Android AudioServer shared routing versus hardware descriptor capabilities without unsupported bit-perfect guarantees.
 
 ### 6. In-App System & Audio Diagnostics Inspector
-* **Storage & Permission Audit:** Inspects `READ_MEDIA_AUDIO`, `READ_EXTERNAL_STORAGE`, `MANAGE_EXTERNAL_STORAGE`, and `POST_NOTIFICATIONS`.
+* **Storage & Permission Audit:** Inspects `READ_MEDIA_AUDIO`, `READ_EXTERNAL_STORAGE`, and `POST_NOTIFICATIONS`.
 * **Audio Sink Hardware Audit:** Queries native sample rates, optimal buffer frames, Float 32-bit sink support, and active audio routing (Speaker, Headset, Bluetooth, USB DAC).
 * **Live Playback Self-Test Probe:** Tests file descriptor opening, track extraction, and buffer feeds in real time.
 * **Live Event Console:** Full timestamped log with one-tap report copying.

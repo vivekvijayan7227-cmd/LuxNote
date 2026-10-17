@@ -466,12 +466,13 @@ class PlaybackManager private constructor(private val context: Context) {
 
     fun updateBitPerfectStatus() {
         val dspActive = dspPipeline.dspEnabled
-        // Reserve bit-perfect strictly for demonstrated end-to-end verified paths
+        // Android AudioTrack routes through system AudioFlinger mixer; reserve bit-perfect strictly for demonstrated hardware probe
         _isBitPerfect.value = false
 
+        val sinkFormat = if (audioPlayer.isUsingFloatTrack) "32-bit Float" else "16-bit PCM"
         _signalPathDescription.value = when {
-            dspActive -> "DSP: Active"
-            else -> "DSP: Bypassed"
+            dspActive -> "DSP Active ($sinkFormat)"
+            else -> "DSP Bypassed ($sinkFormat)"
         }
     }
 

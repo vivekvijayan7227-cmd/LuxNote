@@ -368,4 +368,75 @@ class DspAudioEngineTest {
         assertTrue("Graphic EQ must be flat after reset", pipeline.graphicEq.isFlat())
         assertFalse("CenterChannelProcessor must be inactive after reset", pipeline.centerChannelProcessor.isActive())
     }
+
+    @Test
+    fun testPreampGainAndLimiterSaturationParity() {
+        val preamp = PreampGainStage()
+        preamp.setGainDb(0.0f)
+
+        // Linear range (< 0.95): Must be completely unaltered
+        val linearIn = floatArrayOf(0.5f, -0.5f, 0.8f, -0.8f, 0.94f, -0.94f)
+        for (i in linearIn.indices step 2) {
+            val frame = floatArrayOf(linearIn[i], linearIn[i + 1])
+            preamp.processFrame(frame, 0)
+            assertEquals(linearIn[i], frame[0], 0.0001f)
+            assertEquals(linearIn[i + 1], frame[1], 0.0001f)
+        }
+
+        // Saturation range (> 0.95): Smooth compression strictly bounded < 1.0
+        val hotInputs = floatArrayOf(0.96f, 1.0f, 1.5f, 2.0f, 10.0f, -2.0f)
+        for (x in hotInputs) {
+            val saturated = preamp.softClip(x)
+            assertTrue("Saturated value must be <= 1.0 for positive input: $saturated", saturated <= 1.0f)
+            assertTrue("Saturated value must be >= -1.0 for negative input: $saturated", saturated >= -1.0f)
+            assertTrue("Saturated value must be > 0.95 for x > 0.95", abs(saturated) > 0.95f)
+        }
+    }
+
+    @Test
+    fun testSweptSineFrequencyResponseStability() {
+        val filter = BiquadFilter()
+        filter.configure(BiquadType.Peaking, 48000.0f, 1000.0f, 6.0f, 1.414)
+
+        // Generate swept sine wave from 20 Hz to 20000 Hz
+        val sampleRate = 48000.0
+        val numSamples = 2400
+        var phase = 0.0
+        var maxObserved = 0.0f
+
+        for (n in 0 until numSamples) {
+            val f = 20.0 * Math.pow(1000.0, n.toDouble() / numSamples)
+            phase += 2.0 * Math.PI * f / sampleRate
+            val inputSample = Math.sin(phase)
+            val outputSample = filter.processMonoSample(inputSample).toFloat()
+
+            assertFalse("Filter output must not be NaN", outputSample.isNaN())
+            assertFalse("Filter output must not be Infinite", outputSample.isInfinite())
+            if (abs(outputSample) > maxObserved) {
+                maxObserved = abs(outputSample)
+            }
+        }
+
+        // Gain of +6 dB equals a linear factor of ~2.0
+        assertTrue("Max amplitude with +6dB boost should be roughly ~2.0, observed: $maxObserved", maxObserved in 1.8f..2.2f)
+    }
+
+    @Test
+    fun testBiquadFilterResetAndImpulseResponse() {
+        val filter = BiquadFilter()
+        filter.configure(BiquadType.Peaking, 44100.0f, 1000.0f, 6.0f, 1.0)
+
+        // Feed impulse: 1.0 followed by zeroes
+        val impulse = doubleArrayOf(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        val response = impulse.map { filter.processMonoSample(it) }
+
+        // Response should decay over time
+        assertTrue("Initial impulse response non-zero", abs(response[0]) > 0.0)
+        assertTrue("Impulse response decays", abs(response.last()) < abs(response[0]))
+
+        // Reset filter
+        filter.reset()
+        val zeroResponse = filter.processMonoSample(0.0)
+        assertEquals("Post-reset zero input must yield exactly zero output", 0.0, zeroResponse, 0.000001)
+    }
 }

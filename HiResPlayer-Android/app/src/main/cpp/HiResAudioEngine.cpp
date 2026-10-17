@@ -1,5 +1,8 @@
 #include "HiResAudioEngine.h"
 #include <cstring>
+#if defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
 
 namespace hires {
 
@@ -223,9 +226,19 @@ void HiResAudioEngine::recomputeVocal(DspSnapshot& snap) {
 }
 
 void HiResAudioEngine::commitSnapshot() {
+    // 1. Copy staged parameters into private write slot
     m_snapshots[m_writeIdx] = m_staging;
-    m_writeIdx = m_sharedIdx.exchange(m_writeIdx, std::memory_order_acq_rel);
-    m_commitSeq.fetch_add(1, std::memory_order_release);
+
+    // 2. Canonical single-producer single-consumer lock-free triple buffer
+    // Atomically swap writeIdx into sharedState with dirty bit (0x04) set
+    uint32_t oldState = m_sharedState.load(std::memory_order_relaxed);
+    uint32_t newState;
+    do {
+        newState = (static_cast<uint32_t>(m_writeIdx) & 0x03u) | 0x04u;
+    } while (!m_sharedState.compare_exchange_weak(oldState, newState,
+                                                 std::memory_order_release,
+                                                 std::memory_order_relaxed));
+    m_writeIdx = static_cast<int>(oldState & 0x03u);
 }
 
 void HiResAudioEngine::processInterleavedStereo(float* buffer, int frameCount) {
@@ -236,23 +249,49 @@ void HiResAudioEngine::processInterleavedStereo(float* buffer, int frameCount) {
     bool clipped = false;
     bool dsp = m_dspEnabled.load(std::memory_order_relaxed);
 
-    // Lock-free acquisition of newest DSP parameter snapshot via sequence-versioned triple-buffering
-    uint64_t currentSeq = m_commitSeq.load(std::memory_order_acquire);
-    if (currentSeq != m_readSeq) {
-        m_readIdx = m_sharedIdx.exchange(m_readIdx, std::memory_order_acq_rel);
-        m_readSeq = currentSeq;
+    // Canonical lock-free acquisition of newest DSP parameter snapshot
+    uint32_t shared = m_sharedState.load(std::memory_order_relaxed);
+    if (shared & 0x04u) { // New parameter snapshot available
+        uint32_t oldState = shared;
+        uint32_t newState;
+        do {
+            if (!(oldState & 0x04u)) break; // already claimed
+            newState = static_cast<uint32_t>(m_readIdx) & 0x03u; // return current read slot, clear dirty flag
+        } while (!m_sharedState.compare_exchange_weak(oldState, newState,
+                                                     std::memory_order_acquire,
+                                                     std::memory_order_relaxed));
+        if (oldState & 0x04u) {
+            m_readIdx = static_cast<int>(oldState & 0x03u);
+        }
     }
     const auto& snap = m_snapshots[m_readIdx];
 
     int sampleCount = frameCount * 2;
-    for (int i = 0; i < sampleCount; i += 2) {
-        float inL = buffer[i];
-        float inR = buffer[i + 1];
+    if (dsp) {
+#if defined(__ARM_NEON)
+        // Vectorized preamp scaling with ARM NEON intrinsics (processes 4 floats at a time)
+        if (std::abs(snap.preampLinear - 1.0f) > 0.001f) {
+            int vLimit = (sampleCount / 4) * 4;
+            float32x4_t vGain = vdupq_n_f32(snap.preampLinear);
+            for (int j = 0; j < vLimit; j += 4) {
+                float32x4_t v = vld1q_f32(&buffer[j]);
+                vst1q_f32(&buffer[j], vmulq_f32(v, vGain));
+            }
+            for (int j = vLimit; j < sampleCount; ++j) {
+                buffer[j] *= snap.preampLinear;
+            }
+        }
+#endif
 
-        if (dsp) {
-            // 1. Preamp Stage
+        for (int i = 0; i < sampleCount; i += 2) {
+            float inL = buffer[i];
+            float inR = buffer[i + 1];
+
+#if !defined(__ARM_NEON)
+            // Scalar preamp stage
             inL *= snap.preampLinear;
             inR *= snap.preampLinear;
+#endif
 
             // 2. Direct Form II Transposed 10-Band Graphic EQ
             if (snap.graphicActive) {
@@ -356,15 +395,28 @@ void HiResAudioEngine::processInterleavedStereo(float* buffer, int frameCount) {
 
             buffer[i] = inL;
             buffer[i + 1] = inR;
+
+            // Tap for FFT Circular Buffer
+            float mono = 0.5f * (inL + inR);
+            m_fftBuffer[m_fftBufferIndex] = mono;
+            m_fftBufferIndex = (m_fftBufferIndex + 1) % FFT_SIZE;
+
+            maxL = std::max(maxL, std::abs(inL));
+            maxR = std::max(maxR, std::abs(inR));
         }
+    } else {
+        for (int i = 0; i < sampleCount; i += 2) {
+            float inL = buffer[i];
+            float inR = buffer[i + 1];
 
-        // Tap for FFT Circular Buffer
-        float mono = 0.5f * (inL + inR);
-        m_fftBuffer[m_fftBufferIndex] = mono;
-        m_fftBufferIndex = (m_fftBufferIndex + 1) % FFT_SIZE;
+            // Tap for FFT Circular Buffer
+            float mono = 0.5f * (inL + inR);
+            m_fftBuffer[m_fftBufferIndex] = mono;
+            m_fftBufferIndex = (m_fftBufferIndex + 1) % FFT_SIZE;
 
-        maxL = std::max(maxL, std::abs(inL));
-        maxR = std::max(maxR, std::abs(inR));
+            maxL = std::max(maxL, std::abs(inL));
+            maxR = std::max(maxR, std::abs(inR));
+        }
     }
 
     if (clipped) {

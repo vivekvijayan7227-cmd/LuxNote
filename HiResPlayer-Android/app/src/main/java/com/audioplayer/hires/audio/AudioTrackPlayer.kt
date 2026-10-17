@@ -91,8 +91,10 @@ class AudioTrackPlayer(
     @Volatile private var seekTargetUs: Long = -1L
     private val currentSessionId = java.util.concurrent.atomic.AtomicLong(0L)
 
+    val isUsingFloatTrack: Boolean get() = isFloatTrack
+
     val isBitPerfectCapable: Boolean
-        get() = getOutputDevices().any { it.isBitPerfectCapable }
+        get() = false // Standard Android AudioTrack routes through AudioFlinger mixer; bit-perfect bypass requires exclusive USB kernel driver
 
     var onStatusChanged: ((PlayerStatus) -> Unit)? = null
     var onPositionChanged: ((Long) -> Unit)? = null
@@ -184,9 +186,9 @@ class AudioTrackPlayer(
                         name = dev.productName.toString().ifBlank { typeName },
                         type = typeName,
                         isUsbDac = isUsb,
-                        isBitPerfectCapable = isUsb || !isBt,
+                        isBitPerfectCapable = false,
                         currentSampleRate = sampleRate,
-                        currentBitDepth = 24
+                        currentBitDepth = if (isFloatTrack) 32 else 16
                     )
                 )
             }
@@ -195,12 +197,12 @@ class AudioTrackPlayer(
         if (list.isEmpty()) {
             list.add(
                 AudioOutputDevice(
-                    name = "Primary Hi-Res Audio Endpoint",
-                    type = "Direct Hardware PCM Sink",
+                    name = "Primary AudioTrack Endpoint",
+                    type = "Android AudioServer Shared Sink",
                     isUsbDac = false,
-                    isBitPerfectCapable = true,
+                    isBitPerfectCapable = false,
                     currentSampleRate = sampleRate,
-                    currentBitDepth = 24
+                    currentBitDepth = if (isFloatTrack) 32 else 16
                 )
             )
         }

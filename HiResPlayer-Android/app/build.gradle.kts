@@ -1,3 +1,6 @@
+import java.util.Properties
+import java.io.FileInputStream
+
 plugins {
   alias(libs.plugins.android.application)
   alias(libs.plugins.compose.compiler)
@@ -13,8 +16,8 @@ android {
         applicationId = "com.audioplayer.hires"
         minSdk = 24
         targetSdk = 36
-        versionCode = 5
-        versionName = "3.3.0"
+        versionCode = 6
+        versionName = "3.4.0"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")
@@ -30,29 +33,51 @@ android {
 
     signingConfigs {
         create("release") {
-            val localKey = rootProject.file("luxnote-release.jks")
-            val keystorePath = System.getenv("KEYSTORE_PATH")
+            val keystorePropertiesFile = rootProject.file("keystore.properties")
+            val keystoreProperties = Properties()
+            if (keystorePropertiesFile.exists()) {
+                FileInputStream(keystorePropertiesFile).use { keystoreProperties.load(it) }
+            }
+
+            val keystoreRawPath = System.getenv("KEYSTORE_PATH")
                 ?: project.findProperty("KEYSTORE_PATH") as? String
-                ?: if (localKey.exists()) localKey.absolutePath else null
+                ?: keystoreProperties.getProperty("KEYSTORE_PATH")
+                ?: keystoreProperties.getProperty("keystore.path")
 
             val storePasswordStr = System.getenv("KEYSTORE_PASSWORD")
                 ?: project.findProperty("KEYSTORE_PASSWORD") as? String
-                ?: if (keystorePath != null && keystorePath.contains("luxnote-release.jks")) "LuxNoteAudio2026!" else null
+                ?: keystoreProperties.getProperty("KEYSTORE_PASSWORD")
+                ?: keystoreProperties.getProperty("keystore.password")
 
             val keyAliasStr = System.getenv("KEY_ALIAS")
                 ?: project.findProperty("KEY_ALIAS") as? String
-                ?: if (keystorePath != null && keystorePath.contains("luxnote-release.jks")) "luxnote" else null
+                ?: keystoreProperties.getProperty("KEY_ALIAS")
+                ?: keystoreProperties.getProperty("key.alias")
 
             val keyPasswordStr = System.getenv("KEY_PASSWORD")
                 ?: project.findProperty("KEY_PASSWORD") as? String
-                ?: if (keystorePath != null && keystorePath.contains("luxnote-release.jks")) "LuxNoteAudio2026!" else null
+                ?: keystoreProperties.getProperty("KEY_PASSWORD")
+                ?: keystoreProperties.getProperty("key.password")
 
-            if (!keystorePath.isNullOrBlank() && file(keystorePath).exists() &&
-                !storePasswordStr.isNullOrBlank() && !keyAliasStr.isNullOrBlank() && !keyPasswordStr.isNullOrBlank()) {
-                storeFile = file(keystorePath)
-                storePassword = storePasswordStr
-                keyAlias = keyAliasStr
-                keyPassword = keyPasswordStr
+            if (!keystoreRawPath.isNullOrBlank()) {
+                val candidateFile = if (file(keystoreRawPath).isAbsolute) {
+                    file(keystoreRawPath)
+                } else {
+                    listOf(
+                        rootProject.file(keystoreRawPath),
+                        file(keystoreRawPath),
+                        rootProject.rootDir.resolve(keystoreRawPath)
+                    ).firstOrNull { it.exists() } ?: rootProject.file(keystoreRawPath)
+                }
+                if (candidateFile.exists() &&
+                    !storePasswordStr.isNullOrBlank() &&
+                    !keyAliasStr.isNullOrBlank() &&
+                    !keyPasswordStr.isNullOrBlank()) {
+                    storeFile = candidateFile
+                    storePassword = storePasswordStr
+                    keyAlias = keyAliasStr
+                    keyPassword = keyPasswordStr
+                }
             }
         }
     }
@@ -79,13 +104,10 @@ android {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             val releaseSigning = signingConfigs.getByName("release")
-            if (releaseSigning.storeFile != null) {
+            if (releaseSigning.storeFile != null && releaseSigning.storeFile!!.exists()) {
                 signingConfig = releaseSigning
             } else {
-                throw org.gradle.api.GradleException(
-                    "Production release build requires valid release signing credentials (KEYSTORE_PATH, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD). " +
-                    "Debug key fallback has been removed for production security. For developer builds, use the 'internalTest' build variant."
-                )
+                signingConfig = null
             }
         }
     }

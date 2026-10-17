@@ -93,13 +93,19 @@ class StudioDspPipeline {
                 // Native C++ processing
                 nativeEngine.processInterleavedStereo(samples, frameCount)
             } else {
-                // Managed fallback processing
+                // Managed fallback processing with exact Native C++ DSP parity:
+                // 1. Preamp scaling
+                // 2. 10-Band Graphic EQ
+                // 3. 12-Band Parametric EQ
+                // 4. Acoustic Mid/Side Processor
+                // 5. Output Limiter (tanh knee at 0.95)
                 var i = 0
                 while (i < sampleCount) {
-                    preamp.processFrame(samples, i)
+                    preamp.applyGain(samples, i)
                     graphicEq.processFrame(samples, i)
                     parametricEq.processFrame(samples, i)
                     centerChannelProcessor.processFrame(samples, i)
+                    preamp.applyLimiter(samples, i)
                     i += 2
                 }
             }

@@ -13,10 +13,12 @@ captures/
 Thumbs.db
 Desktop.ini
 
-# Output archives / logs
+# Output archives / logs / credentials
 *.log
 *.jks
 *.keystore
+keystore.properties
+**/keystore.properties
 
 # Kotlin / Python cache
 .kotlin/
