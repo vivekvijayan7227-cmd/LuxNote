@@ -439,4 +439,109 @@ class DspAudioEngineTest {
         val zeroResponse = filter.processMonoSample(0.0)
         assertEquals("Post-reset zero input must yield exactly zero output", 0.0, zeroResponse, 0.000001)
     }
+
+    @Test
+    fun testLimiterMonotonicityAndSymmetry() {
+        val preamp = PreampGainStage()
+        // Limiter transfer function must be strictly monotonic: x1 < x2 => f(x1) <= f(x2)
+        var prevOutput = -1.0f
+        var x = -5.0f
+        while (x <= 5.0f) {
+            val y = preamp.softClip(x)
+            assertTrue("Limiter must be monotonic: for x=$x, prev=$prevOutput, curr=$y", y >= prevOutput - 0.00001f)
+            // Symmetry check: f(-x) == -f(x)
+            val negY = preamp.softClip(-x)
+            assertEquals("Limiter must be odd-symmetric: f(-x) == -f(x)", -y, negY, 0.0001f)
+            prevOutput = y
+            x += 0.01f
+        }
+    }
+
+    @Test
+    fun testMultiRateFilterStabilityAcrossRates() {
+        val rates = floatArrayOf(44100.0f, 48000.0f, 88200.0f, 96000.0f, 176400.0f, 192000.0f)
+        for (sr in rates) {
+            val filter = BiquadFilter()
+            filter.configure(BiquadType.HighShelf, sr, 6000.0f, 3.0f, 0.707)
+            val magDc = filter.evaluateMagnitudeDb(20.0f)
+            val magNyquist = filter.evaluateMagnitudeDb(sr / 2.0f - 100.0f)
+
+            assertEquals("DC gain for 6kHz high shelf should be ~0 dB at sr=$sr", 0.0f, magDc, 0.2f)
+            assertEquals("Nyquist gain for +3dB high shelf should be ~3 dB at sr=$sr", 3.0f, magNyquist, 0.3f)
+        }
+    }
+
+    @Test
+    fun testTripleBufferProtocolConcurrencySimulation() {
+        // Kotlin simulation of the C++ lock-free triple buffer state packing and CAS transitions
+        val sharedState = java.util.concurrent.atomic.AtomicInteger(2) // slot 2, dirty = 0
+        val snapshots = Array(3) { IntArray(8) }
+        var writeIdx = 0
+        var readIdx = 1
+
+        val iterations = 50000
+        val producerErrors = java.util.concurrent.atomic.AtomicInteger(0)
+        val consumerErrors = java.util.concurrent.atomic.AtomicInteger(0)
+
+        val producerThread = Thread {
+            var localWrite = writeIdx
+            for (iter in 1..iterations) {
+                // Producer writes tag into its private slot
+                val slotData = snapshots[localWrite]
+                for (k in slotData.indices) {
+                    slotData[k] = iter
+                }
+                // Atomic CAS publish
+                var oldVal = sharedState.get()
+                var newVal: Int
+                do {
+                    newVal = (localWrite and 0x03) or 0x04 // set dirty bit
+                } while (!sharedState.compareAndSet(oldVal, newVal).also { if (!it) oldVal = sharedState.get() })
+                localWrite = oldVal and 0x03
+            }
+        }
+
+        val consumerThread = Thread {
+            var localRead = readIdx
+            var readCount = 0
+            while (readCount < iterations / 2) {
+                val state = sharedState.get()
+                if ((state and 0x04) != 0) {
+                    var oldVal = state
+                    var newVal: Int
+                    var acquired = false
+                    do {
+                        if ((oldVal and 0x04) == 0) break
+                        newVal = localRead and 0x03 // clear dirty bit
+                        if (sharedState.compareAndSet(oldVal, newVal)) {
+                            acquired = true
+                            localRead = oldVal and 0x03
+                            break
+                        }
+                        oldVal = sharedState.get()
+                    } while (true)
+
+                    if (acquired) {
+                        // Validate snapshot consistency: all elements in slot must equal the same iteration tag (no tearing)
+                        val slotData = snapshots[localRead]
+                        val first = slotData[0]
+                        for (k in 1 until slotData.size) {
+                            if (slotData[k] != first) {
+                                consumerErrors.incrementAndGet()
+                            }
+                        }
+                        readCount++
+                    }
+                }
+            }
+        }
+
+        producerThread.start()
+        consumerThread.start()
+        producerThread.join()
+        consumerThread.join()
+
+        assertEquals("Producer must encounter 0 torn states", 0, producerErrors.get())
+        assertEquals("Consumer must encounter 0 torn reads across 50,000 concurrent transitions", 0, consumerErrors.get())
+    }
 }

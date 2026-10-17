@@ -104,27 +104,51 @@ class UsbAudioInspector(private val context: Context) {
 
     private fun probeUsbDevice(device: UsbDevice): UsbDacInfo? {
         var hasAudioClass = false
-        var hasAudioStreamingSubclass = false
+        var detectedUac = UsbAudioClassVersion.UNKNOWN
+        var detectedClocking = UsbClockingMode.UNKNOWN
+        var hasPlaybackOut = false
         val epDescriptions = mutableListOf<String>()
 
         for (i in 0 until device.interfaceCount) {
             val intf: UsbInterface = device.getInterface(i)
             if (intf.interfaceClass == UsbConstants.USB_CLASS_AUDIO) {
                 hasAudioClass = true
-                if (intf.interfaceSubclass == 2) { // 2 = AUDIO_STREAMING
-                    hasAudioStreamingSubclass = true
+                when (intf.interfaceProtocol) {
+                    0x20 -> detectedUac = UsbAudioClassVersion.UAC2
+                    0x00 -> if (detectedUac == UsbAudioClassVersion.UNKNOWN) detectedUac = UsbAudioClassVersion.UAC1
                 }
+
                 for (j in 0 until intf.endpointCount) {
                     val ep: UsbEndpoint = intf.getEndpoint(j)
                     if (ep.type == UsbConstants.USB_ENDPOINT_XFER_ISOC) {
-                        val dir = if (ep.direction == UsbConstants.USB_DIR_OUT) "OUT (Playback)" else "IN (Capture/Feedback)"
-                        epDescriptions.add("Endpoint 0x%02X [%s, MaxPacket: %d bytes]".format(ep.address, dir, ep.maxPacketSize))
+                        val isOut = ep.direction == UsbConstants.USB_DIR_OUT
+                        if (isOut) hasPlaybackOut = true
+
+                        val syncType = (ep.attributes shr 2) and 0x03
+                        val syncName = when (syncType) {
+                            1 -> {
+                                detectedClocking = UsbClockingMode.ASYNCHRONOUS
+                                "Asynchronous"
+                            }
+                            2 -> {
+                                if (detectedClocking == UsbClockingMode.UNKNOWN) detectedClocking = UsbClockingMode.ADAPTIVE
+                                "Adaptive"
+                            }
+                            3 -> {
+                                if (detectedClocking == UsbClockingMode.UNKNOWN) detectedClocking = UsbClockingMode.SYNCHRONOUS
+                                "Synchronous"
+                            }
+                            else -> "No Sync / Unknown"
+                        }
+
+                        val dir = if (isOut) "OUT (Playback)" else "IN (Capture/Feedback)"
+                        epDescriptions.add("Endpoint 0x%02X [%s, %s, MaxPacket: %d bytes]".format(ep.address, dir, syncName, ep.maxPacketSize))
                     }
                 }
             }
         }
 
-        if (!hasAudioClass && !hasAudioStreamingSubclass) {
+        if (!hasAudioClass && !hasPlaybackOut) {
             return null
         }
 
@@ -137,13 +161,39 @@ class UsbAudioInspector(private val context: Context) {
         // Query real device sample rates from system outputs if matched
         val systemDevices = audioManager?.getDevices(AudioManager.GET_DEVICES_OUTPUTS) ?: emptyArray()
         var reportedRates = emptyList<Int>()
+        var activeRouteName: String? = null
         for (dev in systemDevices) {
             if (dev.type == AudioDeviceInfo.TYPE_USB_DEVICE || dev.type == AudioDeviceInfo.TYPE_USB_HEADSET) {
                 if (dev.sampleRates.isNotEmpty()) {
                     reportedRates = dev.sampleRates.toList()
+                    activeRouteName = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) dev.productName?.toString() else "USB Audio Device"
                     break
                 }
             }
+        }
+
+        val evidence = UsbAudioEvidence(
+            classVersion = detectedUac,
+            clockingMode = detectedClocking,
+            hasPlaybackOutEndpoint = hasPlaybackOut,
+            supportedSampleRates = reportedRates,
+            activeAndroidRouteName = activeRouteName,
+            androidBitPerfectApiAvailable = Build.VERSION.SDK_INT >= 34,
+            bitPerfectModeConfirmedByFramework = false
+        )
+        val report = UsbCapabilityClassifier.classify(evidence)
+
+        val uacString = when (report.classVersion) {
+            UsbAudioClassVersion.UAC2 -> "UAC2 (USB Audio Class 2.0)"
+            UsbAudioClassVersion.UAC1 -> "UAC1 (USB Audio Class 1.0)"
+            UsbAudioClassVersion.UNKNOWN -> "USB Audio Class (Unspecified / Unknown)"
+        }
+
+        val clockString = when (report.clockingMode) {
+            UsbClockingMode.ASYNCHRONOUS -> "Asynchronous (External Master Clock)"
+            UsbClockingMode.ADAPTIVE -> "Adaptive Isochronous"
+            UsbClockingMode.SYNCHRONOUS -> "Synchronous Isochronous"
+            UsbClockingMode.UNKNOWN -> "Unknown / Device Dependent"
         }
 
         return UsbDacInfo(
@@ -151,14 +201,14 @@ class UsbAudioInspector(private val context: Context) {
             deviceName = dacName.ifBlank { "External USB Audio Device" },
             vendorIdHex = "0x%04X".format(device.vendorId),
             productIdHex = "0x%04X".format(device.productId),
-            uacVersion = if (hasAudioStreamingSubclass) "UAC2 (USB Audio Class 2.0)" else "UAC1 (USB Audio Class 1.0)",
-            bitPerfectStatus = CapabilityStatus.UNKNOWN,
-            bitPerfectDetails = "Hardware detected. Direct bit-perfect routing requires Android 14+ driver verification.",
-            clockingMode = if (hasAudioStreamingSubclass) "Asynchronous Isochronous (External Master)" else "Synchronous / Adaptive",
+            uacVersion = uacString,
+            bitPerfectStatus = report.bitPerfectStatus,
+            bitPerfectDetails = report.explanation,
+            clockingMode = clockString,
             interfacesFound = device.interfaceCount,
             isochronousEndpoints = epDescriptions,
-            supportedSampleRates = reportedRates,
-            directRoutingStatus = if (reportedRates.isNotEmpty()) "Hardware reported rates: ${reportedRates.joinToString()} Hz" else "Negotiated dynamically by hardware endpoints"
+            supportedSampleRates = report.sampleRatesHz,
+            directRoutingStatus = if (report.sampleRatesHz.isNotEmpty()) "Hardware reported rates: ${report.sampleRatesHz.joinToString()} Hz" else "Sample rate negotiated per stream"
         )
     }
 }

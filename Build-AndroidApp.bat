@@ -1,7 +1,7 @@
 @echo off
 setlocal enabledelayedexpansion
 echo ========================================================
-echo  LuxNote (Android Edition) - Build & Verification Tool
+echo  LuxNote (Android Edition) - Build ^& Verification Tool
 echo ========================================================
 
 @rem Portable Java discovery: check JAVA_HOME first, then standard paths
@@ -32,7 +32,7 @@ if defined JAVA_HOME (
 cd /d "%~dp0HiResPlayer-Android"
 
 echo.
-echo [1/4] Running Unit & Parity Tests (DSP Engine, MediaStore, Storage)...
+echo [1/4] Running Unit ^& Parity Tests (DSP Engine, MediaStore, Storage)...
 call gradlew.bat testDebugUnitTest --no-daemon
 if !ERRORLEVEL! NEQ 0 (
     echo [ERROR] Unit tests failed!
@@ -41,7 +41,7 @@ if !ERRORLEVEL! NEQ 0 (
 
 echo.
 echo [2/4] Assembling LuxNote Production Release APK...
-call gradlew.bat assembleRelease --no-daemon
+call gradlew.bat assembleRelease --no-daemon --no-configuration-cache
 if !ERRORLEVEL! NEQ 0 (
     echo [ERROR] Release APK assembly failed! Ensure keystore.properties or environment credentials are set.
     exit /b !ERRORLEVEL!
@@ -53,34 +53,13 @@ if not exist "app\build\outputs\apk\release\app-release.apk" (
 )
 
 echo.
-echo [3/4] Performing Cryptographic Signature & Integrity Audit...
-@rem Locate apksigner if available in Android SDK
-set "APKSIGNER_BIN="
-if defined ANDROID_HOME (
-    for /f "delims=" %%f in ('dir /b /s "%ANDROID_HOME%\build-tools\*apksigner.bat" 2^>nul') do (
-        set "APKSIGNER_BIN=%%f"
-        goto :found_signer
-    )
+echo [3/4] Performing Cryptographic Signature ^& Certificate Fingerprint Verification...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\verify-release-apk.ps1" -ApkPath "app\build\outputs\apk\release\app-release.apk" -ExpectedCertificateSha256 "992566A7DE642165F51526D7B5E0E0A6EB6CCB8954919B1DC82D2B348857B31A"
+if !ERRORLEVEL! NEQ 0 (
+    echo [ERROR] Cryptographic signature or certificate identity verification failed!
+    exit /b !ERRORLEVEL!
 )
-if not defined APKSIGNER_BIN (
-    for /f "delims=" %%f in ('dir /b /s "%LOCALAPPDATA%\Android\Sdk\build-tools\*apksigner.bat" 2^>nul') do (
-        set "APKSIGNER_BIN=%%f"
-        goto :found_signer
-    )
-)
-:found_signer
-
-if defined APKSIGNER_BIN (
-    echo Auditing signature using !APKSIGNER_BIN!...
-    call "!APKSIGNER_BIN!" verify --verbose "app\build\outputs\apk\release\app-release.apk"
-    if !ERRORLEVEL! NEQ 0 (
-        echo [ERROR] APK signature verification failed!
-        exit /b !ERRORLEVEL!
-    )
-    echo [OK] APK signature cryptographically verified.
-) else (
-    echo [INFO] apksigner not located in standard SDK path; skipping local apksigner check.
-)
+echo [OK] APK signature and production certificate identity cryptographically verified.
 
 copy /Y "app\build\outputs\apk\release\app-release.apk" "%~dp0LuxNote.apk" >nul
 if !ERRORLEVEL! NEQ 0 (
@@ -94,7 +73,7 @@ powershell -NoProfile -Command "(Get-FileHash -Path '%~dp0LuxNote.apk' -Algorith
 
 echo.
 echo ========================================================
-echo  BUILD & RELEASE VERIFICATION SUCCESSFUL!
+echo  BUILD ^& RELEASE VERIFICATION SUCCESSFUL!
 echo  Signed APK: %~dp0LuxNote.apk
 echo  Checksum:   %~dp0LuxNote.apk.sha256
 echo ========================================================

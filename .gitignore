@@ -24,3 +24,7 @@ keystore.properties
 .kotlin/
 __pycache__/
 *.py[cod]
+
+# Temporary review archives
+luxnote_engineering_contribution.zip
+luxnote_contribution_extracted/

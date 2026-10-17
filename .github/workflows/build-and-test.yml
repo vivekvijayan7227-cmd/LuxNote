@@ -40,7 +40,16 @@ jobs:
           cd HiResPlayer-Android
           ./gradlew assembleInternalTest --no-daemon
 
-      - name: Verify APK Generation & Compute Checksum
+      - name: Verify 100% Offline Security (Assert Zero INTERNET Permission)
+        run: |
+          echo "Auditing manifests for unauthorized network permissions..."
+          if grep -rnw "HiResPlayer-Android/app/src/main/AndroidManifest.xml" -e "android.permission.INTERNET"; then
+            echo "::error::Violation: INTERNET permission detected in AndroidManifest.xml!"
+            exit 1
+          fi
+          echo "PASS: Zero network permissions requested."
+
+      - name: Verify Internal Test APK & Compute SHA-256 Checksum
         run: |
           APK_PATH=$(find HiResPlayer-Android/app/build/outputs/apk/internalTest -name "*.apk" | head -n 1)
           if [ -z "$APK_PATH" ] || [ ! -f "$APK_PATH" ]; then
@@ -49,3 +58,10 @@ jobs:
           fi
           echo "Found APK at: $APK_PATH"
           sha256sum "$APK_PATH"
+
+      - name: Upload Test Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: HiResPlayer-Android/app/build/reports/tests/

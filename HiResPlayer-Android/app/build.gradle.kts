@@ -103,12 +103,7 @@ android {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            val releaseSigning = signingConfigs.getByName("release")
-            if (releaseSigning.storeFile != null && releaseSigning.storeFile!!.exists()) {
-                signingConfig = releaseSigning
-            } else {
-                signingConfig = null
-            }
+            signingConfig = signingConfigs.getByName("release")
         }
     }
     compileOptions {

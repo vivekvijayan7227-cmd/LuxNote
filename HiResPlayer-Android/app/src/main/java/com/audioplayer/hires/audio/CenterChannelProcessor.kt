@@ -1,49 +1,54 @@
 package com.audioplayer.hires.audio
 
+import kotlin.math.abs
 import kotlin.math.max
 
 /**
- * Professional Audiophile Mid/Side Center Channel & Vocal Separation Processor.
- * Uses minimum-phase double-precision filters and phase-coherent M/S reconstruction
- * to eliminate comb filtering, metallic ringing, and hollow swishing noise.
+ * Mid/side vocal/instrument focus processor.
  *
- * Mode 0: Off / Original Mix (Bit-exact bypass)
- * Mode 1: Vocal Focus (Formant presence boost + side attenuation)
- * Mode 2: Instrumental Focus (Center lead vocal attenuation, sub-bass & air preservation)
+ * Aligned with native C++ engine contract:
+ * - Vocal Focus: Peaking at 2.6 kHz (+0..+6 dB) and High Shelf at 6 kHz (+0..+3 dB).
+ * - Instrumental Focus: Linkwitz-Riley low-pass at 140 Hz and high-pass at 6 kHz.
+ * - Center channel separation and stem balancing.
  */
 class CenterChannelProcessor {
     companion object {
         const val MODE_OFF = 0
         const val MODE_VOCAL_FOCUS = 1
         const val MODE_INSTRUMENTAL_FOCUS = 2
+
+        const val VOCAL_PRESENCE_HZ = 2600.0f
+        const val VOCAL_PRESENCE_MAX_DB = 6.0f
+        const val VOCAL_AIR_HZ = 6000.0f
+        const val VOCAL_AIR_MAX_DB = 3.0f
+        const val INSTRUMENT_SUB_BASS_HZ = 140.0f
+        const val INSTRUMENT_AIR_HZ = 6000.0f
     }
 
     private var mode = MODE_OFF
     private var amount = 0.0f
     private var sampleRate = 44100.0f
 
-    // Filters for Vocal Focus
     private val vocalBoost = BiquadFilter()
     private val vocalShelf = BiquadFilter()
-
-    // Filters for Instrumental Focus
     private val lpBass = BiquadFilter()
     private val hpAir = BiquadFilter()
 
+    private var vocalGain = 1.0f
+    private var instrumentGain = 1.0f
+
     fun setSampleRate(sr: Float) {
         sampleRate = max(8000.0f, sr)
-        reset()
+        resetFilterState()
         recompute()
     }
 
     fun configure(m: Int, amt: Float) {
+        require(m in MODE_OFF..MODE_INSTRUMENTAL_FOCUS) { "Unsupported center-channel mode: $m" }
         mode = m
         amount = amt.coerceIn(0.0f, 1.0f)
         recompute()
     }
-
-    private var vocalGain = 1.0f
-    private var instrumentGain = 1.0f
 
     fun setStemBalance(vocal: Float, instrument: Float) {
         vocalGain = vocal.coerceIn(0.0f, 2.0f)
@@ -52,107 +57,100 @@ class CenterChannelProcessor {
 
     fun getVocalGain(): Float = vocalGain
     fun getInstrumentGain(): Float = instrumentGain
-
     fun getMode(): Int = mode
     fun getAmount(): Float = amount
-    fun isActive(): Boolean = (mode != MODE_OFF && amount > 0.001f) ||
-            kotlin.math.abs(vocalGain - 1.0f) > 0.001f ||
-            kotlin.math.abs(instrumentGain - 1.0f) > 0.001f
 
-    fun reset() {
-        vocalGain = 1.0f
-        instrumentGain = 1.0f
+    fun isActive(): Boolean = (mode != MODE_OFF && amount > 0.001f) ||
+        abs(vocalGain - 1.0f) > 0.001f || abs(instrumentGain - 1.0f) > 0.001f
+
+    /** Reset filter state without changing user-set stem gain. */
+    fun resetFilterState() {
         vocalBoost.reset()
         vocalShelf.reset()
         lpBass.reset()
         hpAir.reset()
     }
 
-    /**
-     * Process a single stereo frame in place with zero comb filtering or phase hash.
-     */
-    fun processFrame(samples: FloatArray, offset: Int) {
-        val hasVocalEffect = mode != MODE_OFF && amount > 0.001f
-        val hasStemBalance = kotlin.math.abs(vocalGain - 1.0f) > 0.001f || kotlin.math.abs(instrumentGain - 1.0f) > 0.001f
+    /** Reset the complete processor to its neutral state. */
+    fun reset() {
+        vocalGain = 1.0f
+        instrumentGain = 1.0f
+        mode = MODE_OFF
+        amount = 0.0f
+        resetFilterState()
+        recompute()
+    }
 
-        if (!hasVocalEffect && !hasStemBalance) return
+    /** Process one interleaved stereo frame in place. Caller must ensure offset+1 is valid. */
+    fun processFrame(samples: FloatArray, offset: Int) {
+        val activeVocal = mode == MODE_VOCAL_FOCUS && amount > 0.001f
+        val activeInstrument = mode == MODE_INSTRUMENTAL_FOCUS && amount > 0.001f
+        val stemBalanceChanged = abs(vocalGain - 1.0f) > 0.001f ||
+            abs(instrumentGain - 1.0f) > 0.001f
+        if (!activeVocal && !activeInstrument && !stemBalanceChanged) return
 
         val inL = samples[offset]
         val inR = samples[offset + 1]
         val mid = 0.5f * (inL + inR) * vocalGain
         var side = 0.5f * (inL - inR) * instrumentGain
 
-        if (mode == MODE_VOCAL_FOCUS && amount > 0.001f) {
-            // Mode 1: Vocal Focus (Formant boost + high-shelf air, zero allocation)
-            val midBoosted = vocalBoost.processMonoSample(mid.toDouble())
-            val midShelved = vocalShelf.processMonoSample(midBoosted)
-
-            val midOut = (midShelved * (1.0 + 0.35 * amount)).toFloat()
-            val sideAtten = max(0.20f, 1.0f - (amount * 0.65f))
-            side *= sideAtten
-
-            samples[offset] = midOut + side
-            samples[offset + 1] = midOut - side
-        } else if (mode == MODE_INSTRUMENTAL_FOCUS && amount > 0.001f) {
-            // Mode 2: Instrumental Focus (Decompose mid channel without array allocations)
-            val subBass = lpBass.processMonoSample(mid.toDouble()).toFloat()
-            val air = hpAir.processMonoSample(mid.toDouble()).toFloat()
-
-            // The vocal formant band is mid minus sub-bass and air
-            val vocalBand = mid - subBass - air
-
-            // Attenuate the vocal band smoothly: 0 dB down to -24 dB
-            val vocalAtten = max(0.063f, 1.0f - (amount * 0.937f))
-            val suppressedVocal = vocalBand * vocalAtten
-
-            // Reconstruct pristine mid channel: sub-bass + air + attenuated center vocals
-            val midOut = subBass + air + suppressedVocal
-
-            samples[offset] = midOut + side
-            samples[offset + 1] = midOut - side
-        } else {
-            samples[offset] = mid + side
-            samples[offset + 1] = mid - side
+        val midOut = when {
+            activeVocal -> {
+                val presence = vocalBoost.processMonoSample(mid.toDouble())
+                val air = vocalShelf.processMonoSample(presence)
+                (air * (1.0 + 0.35 * amount)).toFloat().also {
+                    side *= max(0.20f, 1.0f - amount * 0.65f)
+                }
+            }
+            activeInstrument -> {
+                val subBass = lpBass.processMonoSample(mid.toDouble()).toFloat()
+                val air = hpAir.processMonoSample(mid.toDouble()).toFloat()
+                val vocalBand = mid - subBass - air
+                val vocalAtten = max(0.063f, 1.0f - amount * 0.937f)
+                subBass + air + vocalBand * vocalAtten
+            }
+            else -> mid
         }
+
+        samples[offset] = midOut + side
+        samples[offset + 1] = midOut - side
     }
 
     private fun recompute() {
-        if (mode == MODE_VOCAL_FOCUS) {
-            // Focus on vocal formants at 2.6 kHz with +6 dB max peak
-            val vocalGainDb = amount * 6.0f
-            vocalBoost.configure(
-                type = BiquadType.Peaking,
-                sr = sampleRate,
-                frequency = 2600.0f,
-                gainDb = vocalGainDb,
-                q = 1.2
-            )
-            // Attenuate muddiness below 120 Hz
-            val shelfCutDb = -amount * 3.0f
-            vocalShelf.configure(
-                type = BiquadType.LowShelf,
-                sr = sampleRate,
-                frequency = 120.0f,
-                gainDb = shelfCutDb,
-                q = 0.7071
-            )
-        } else if (mode == MODE_INSTRUMENTAL_FOCUS) {
-            // 2nd-order Butterworth Linkwitz-Riley low-pass for sub-bass preservation
-            lpBass.configure(
-                type = BiquadType.LowPass,
-                sr = sampleRate,
-                frequency = 140.0f,
-                gainDb = 0.0f,
-                q = 0.7071
-            )
-            // High-pass for crisp acoustic air & cymbal sheen
-            hpAir.configure(
-                type = BiquadType.HighPass,
-                sr = sampleRate,
-                frequency = 6000.0f,
-                gainDb = 0.0f,
-                q = 0.7071
-            )
+        when (mode) {
+            MODE_VOCAL_FOCUS -> {
+                vocalBoost.configure(
+                    type = BiquadType.Peaking,
+                    sr = sampleRate,
+                    frequency = VOCAL_PRESENCE_HZ,
+                    gainDb = amount * VOCAL_PRESENCE_MAX_DB,
+                    q = 1.2
+                )
+                // Aligned with native C++ calcHighShelf(snap.vocalShelfCoeffs, snap.sampleRate, 6000.0f, snap.vocalAmount * 3.0f, 0.707f)
+                vocalShelf.configure(
+                    type = BiquadType.HighShelf,
+                    sr = sampleRate,
+                    frequency = VOCAL_AIR_HZ,
+                    gainDb = amount * VOCAL_AIR_MAX_DB,
+                    q = 0.707
+                )
+            }
+            MODE_INSTRUMENTAL_FOCUS -> {
+                lpBass.configure(
+                    type = BiquadType.LowPass,
+                    sr = sampleRate,
+                    frequency = INSTRUMENT_SUB_BASS_HZ,
+                    gainDb = 0.0f,
+                    q = 0.7071
+                )
+                hpAir.configure(
+                    type = BiquadType.HighPass,
+                    sr = sampleRate,
+                    frequency = INSTRUMENT_AIR_HZ,
+                    gainDb = 0.0f,
+                    q = 0.7071
+                )
+            }
         }
     }
 }
