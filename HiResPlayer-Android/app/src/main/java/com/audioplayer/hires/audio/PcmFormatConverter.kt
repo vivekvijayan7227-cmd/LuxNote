@@ -23,13 +23,13 @@ object PcmFormatConverter {
      * Explicit unsupported encodings throw UnsupportedPcmEncodingException.
      */
     fun resolveEffectiveEncoding(encoding: Int, channels: Int = 2): Int {
-        return when (encoding) {
-            0, AudioFormat.ENCODING_INVALID, AudioFormat.ENCODING_DEFAULT -> AudioFormat.ENCODING_PCM_16BIT
-            AudioFormat.ENCODING_PCM_16BIT,
-            AudioFormat.ENCODING_PCM_FLOAT,
-            21, // AudioFormat.ENCODING_PCM_24BIT_PACKED
-            22, // AudioFormat.ENCODING_PCM_32BIT
-            AudioFormat.ENCODING_PCM_8BIT -> encoding
+        return when {
+            encoding <= 0 || encoding == AudioFormat.ENCODING_INVALID || encoding == AudioFormat.ENCODING_DEFAULT -> AudioFormat.ENCODING_PCM_16BIT
+            encoding == AudioFormat.ENCODING_PCM_16BIT ||
+            encoding == AudioFormat.ENCODING_PCM_FLOAT ||
+            encoding == 21 || // AudioFormat.ENCODING_PCM_24BIT_PACKED
+            encoding == 22 || // AudioFormat.ENCODING_PCM_32BIT
+            encoding == AudioFormat.ENCODING_PCM_8BIT -> encoding
             else -> throw UnsupportedPcmEncodingException(encoding, channels)
         }
     }
@@ -57,6 +57,7 @@ object PcmFormatConverter {
         channelCount: Int,
         targetFloatBuffer: FloatArray
     ): Int {
+        byteBuffer.order(java.nio.ByteOrder.LITTLE_ENDIAN)
         val channels = channelCount.coerceAtLeast(1)
         val effectiveEncoding = resolveEffectiveEncoding(encoding, channels)
         val bytesPerSample = getBytesPerSample(effectiveEncoding)

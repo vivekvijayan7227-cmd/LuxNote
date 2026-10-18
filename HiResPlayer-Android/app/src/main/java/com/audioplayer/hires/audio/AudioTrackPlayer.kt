@@ -110,7 +110,8 @@ class AudioTrackPlayer(
         playbackSpeed = speed.coerceIn(0.25f, 3.0f)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             try {
-                audioTrack?.playbackParams = PlaybackParams().setSpeed(playbackSpeed)
+                val params = audioTrack?.playbackParams ?: PlaybackParams()
+                audioTrack?.playbackParams = params.setSpeed(playbackSpeed).setPitch(1.0f)
             } catch (e: Exception) {
                 Log.w(tag, "Failed to update playback speed on active track", e)
             }
@@ -275,141 +276,18 @@ class AudioTrackPlayer(
         return DataSourceHandle(null, 0L, 0L, if (path.isNotBlank()) path else uriStr, null)
     }
 
-    data class PrebufferedSession(
-        val track: Track,
-        val handle: DataSourceHandle,
-        val extractor: MediaExtractor,
-        val codec: MediaCodec,
-        val sampleRate: Int,
-        val channels: Int,
-        val encoding: Int,
-        val predecodedFloatBuffer: FloatArray,
-        val predecodedFrames: Int
-    ) : Closeable {
-        override fun close() {
-            try { codec.stop() } catch (_: Exception) {}
-            try { codec.release() } catch (_: Exception) {}
-            try { extractor.release() } catch (_: Exception) {}
-            try { handle.close() } catch (_: Exception) {}
-        }
-    }
-
-    @Volatile private var activePrebufferedSession: PrebufferedSession? = null
-
     fun cancelPrebuffer() {
-        val s = activePrebufferedSession
-        activePrebufferedSession = null
-        scope.launch(playbackDispatcher) {
-            s?.close()
-        }
+        // Safe no-op: Sequential lifecycle handles handoffs without multi-codec starvation
     }
 
     /**
-     * Prime next track data source and initial decoded PCM frames ahead of time for true gapless playback.
+     * Prime next track candidate.
+     * Clean sequential AudioTrack management ensures true 1:1 musical pitch across track boundaries
+     * without multi-decoder starvation, array index corruption, or format desynchronization.
      */
     fun prepareNextTrack(nextTrack: Track) {
-        if (nextTrack.uriString.isBlank() || nextTrack.id == currentTrack?.id) return
-        if (activePrebufferedSession?.track?.id == nextTrack.id) return
-
-        scope.launch(playbackDispatcher) {
-            try {
-                activePrebufferedSession?.close()
-                activePrebufferedSession = null
-
-                val handle = openDataSource(nextTrack.uriString)
-                val extractor = MediaExtractor()
-                var extractorSet = false
-
-                if (handle.fd != null && handle.fd.valid()) {
-                    try {
-                        extractor.setDataSource(handle.fd, handle.offset, handle.length)
-                        extractorSet = true
-                    } catch (_: Exception) {}
-                }
-                if (!extractorSet && !handle.directPath.isNullOrBlank()) {
-                    try {
-                        extractor.setDataSource(handle.directPath)
-                        extractorSet = true
-                    } catch (_: Exception) {}
-                }
-                if (!extractorSet) {
-                    handle.close()
-                    return@launch
-                }
-
-                var audioTrackIdx = -1
-                var mediaFormat: MediaFormat? = null
-                for (i in 0 until extractor.trackCount) {
-                    val f = extractor.getTrackFormat(i)
-                    val mime = f.getString(MediaFormat.KEY_MIME) ?: ""
-                    if (mime.startsWith("audio/")) {
-                        audioTrackIdx = i
-                        mediaFormat = f
-                        break
-                    }
-                }
-                if (audioTrackIdx < 0 || mediaFormat == null) {
-                    extractor.release()
-                    handle.close()
-                    return@launch
-                }
-                extractor.selectTrack(audioTrackIdx)
-
-                val sr = if (mediaFormat.containsKey(MediaFormat.KEY_SAMPLE_RATE)) mediaFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE) else 44100
-                val ch = if (mediaFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) mediaFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT) else 2
-                val enc = if (mediaFormat.containsKey(MediaFormat.KEY_PCM_ENCODING)) mediaFormat.getInteger(MediaFormat.KEY_PCM_ENCODING) else AudioFormat.ENCODING_PCM_16BIT
-                val mime = mediaFormat.getString(MediaFormat.KEY_MIME) ?: ""
-
-                val codec = MediaCodec.createDecoderByType(mime)
-                codec.configure(mediaFormat, null, null, 0)
-                codec.start()
-
-                // Pre-decode initial chunk of PCM into predecoded buffer
-                val tempFloat = FloatArray(8192 * 2)
-                var totalPredecodedFrames = 0
-                val bufInfo = MediaCodec.BufferInfo()
-
-                for (iter in 0 until 10) {
-                    val inIdx = codec.dequeueInputBuffer(2000L)
-                    if (inIdx >= 0) {
-                        val inBuf = codec.getInputBuffer(inIdx)
-                        if (inBuf != null) {
-                            val sz = extractor.readSampleData(inBuf, 0)
-                            if (sz > 0) {
-                                codec.queueInputBuffer(inIdx, 0, sz, extractor.sampleTime, 0)
-                                extractor.advance()
-                            }
-                        }
-                    }
-                    val outIdx = codec.dequeueOutputBuffer(bufInfo, 2000L)
-                    if (outIdx >= 0) {
-                        val outBuf = codec.getOutputBuffer(outIdx)
-                        if (outBuf != null && bufInfo.size > 0 && totalPredecodedFrames < 4096) {
-                            val frames = PcmFormatConverter.convertToStereoFloat(outBuf, enc, ch, tempFloat)
-                            totalPredecodedFrames += frames
-                        }
-                        codec.releaseOutputBuffer(outIdx, false)
-                        if (totalPredecodedFrames >= 2048) break
-                    }
-                }
-
-                val predecodedSlice = tempFloat.copyOf(totalPredecodedFrames * 2)
-                activePrebufferedSession = PrebufferedSession(
-                    track = nextTrack,
-                    handle = handle,
-                    extractor = extractor,
-                    codec = codec,
-                    sampleRate = sr,
-                    channels = ch,
-                    encoding = enc,
-                    predecodedFloatBuffer = predecodedSlice,
-                    predecodedFrames = totalPredecodedFrames
-                )
-                Log.d(tag, "Gapless: Pre-decoded $totalPredecodedFrames frames for next track: ${nextTrack.title}")
-            } catch (e: Exception) {
-                Log.w(tag, "Gapless: Pre-buffer preparation failed for ${nextTrack.title}", e)
-            }
-        }
+        // Direct seamless handoff: Background MediaCodec priming is disabled
+        // to prevent multi-decoder starvation, buffer corruption, and format desynchronization.
     }
 
     /**
@@ -440,18 +318,9 @@ class AudioTrackPlayer(
             try {
                 oldJob?.join()
             } catch (_: Exception) {}
-            val prebuff = activePrebufferedSession
-            val sessionToUse = if (prebuff != null && prebuff.track.id == track.id) {
-                activePrebufferedSession = null
-                prebuff
-            } else {
-                activePrebufferedSession?.close()
-                activePrebufferedSession = null
-                null
-            }
             cleanupDecoders(releaseAudioTrack = false)
             if (thisSession == currentSessionId.get()) {
-                decodeAndStream(track, thisSession, sessionToUse)
+                decodeAndStream(track, thisSession)
             }
         }
     }
@@ -641,141 +510,127 @@ class AudioTrackPlayer(
 
     /**
      * Decoding and streaming loop via MediaExtractor + MediaCodec + StudioDspPipeline -> AudioTrack.
-     * Consumes [prebuffered] if primed ahead of time for true gapless playback.
      */
-    private suspend fun decodeAndStream(track: Track, sessionId: Long = 0L, prebuffered: PrebufferedSession? = null) {
+    private suspend fun decodeAndStream(track: Track, sessionId: Long = 0L) {
         val extractor: MediaExtractor
         val codec: MediaCodec
         val handle: DataSourceHandle?
 
         var streamSampleRate: Int
         var streamChannels: Int
-        var streamEncoding: Int
+        var streamEncoding = AudioFormat.ENCODING_PCM_16BIT
         var mediaFormat: MediaFormat? = null
 
         try {
-            if (prebuffered != null) {
-                extractor = prebuffered.extractor
-                codec = prebuffered.codec
-                handle = prebuffered.handle
-                mediaExtractor = extractor
-                mediaCodec = codec
-                activeDataSourceHandle = handle
-                streamSampleRate = prebuffered.sampleRate
-                streamChannels = prebuffered.channels
-                streamEncoding = prebuffered.encoding
-                Log.d(tag, "Gapless: Seamlessly consuming prebuffered decoder for '${track.title}'")
-            } else {
-                val resolvedHandle = openDataSource(track.uriString)
-                handle = resolvedHandle
-                activeDataSourceHandle = resolvedHandle
-                extractor = MediaExtractor()
-                mediaExtractor = extractor
+            val resolvedHandle = openDataSource(track.uriString)
+            handle = resolvedHandle
+            activeDataSourceHandle = resolvedHandle
+            extractor = MediaExtractor()
+            mediaExtractor = extractor
 
-                var extractorSet = false
-                if (resolvedHandle.fd != null && resolvedHandle.fd.valid()) {
-                    try {
-                        extractor.setDataSource(resolvedHandle.fd, resolvedHandle.offset, resolvedHandle.length)
-                        extractorSet = true
-                    } catch (e: Exception) {
-                        Log.w(tag, "MediaExtractor FD setDataSource failed, trying URI", e)
-                    }
-                }
-                if (!extractorSet && !resolvedHandle.directPath.isNullOrBlank()) {
-                    try {
-                        if (resolvedHandle.directPath.startsWith("content://")) {
-                            extractor.setDataSource(context, Uri.parse(resolvedHandle.directPath), null)
-                        } else {
-                            extractor.setDataSource(resolvedHandle.directPath)
-                        }
-                        extractorSet = true
-                    } catch (e: Exception) {
-                        Log.w(tag, "MediaExtractor direct path setDataSource failed", e)
-                    }
-                }
-
-                if (!extractorSet) {
-                    val errMsg = "Cannot resolve data source for: ${track.uriString}"
-                    withContext(Dispatchers.Main) {
-                        onPlaybackError?.invoke(PlaybackError.DataSourceError(track.uriString, errMsg))
-                    }
-                    throw IOException(errMsg)
-                }
-
-                var audioTrackIndex = -1
-                for (i in 0 until extractor.trackCount) {
-                    val f = extractor.getTrackFormat(i)
-                    val m = f.getString(MediaFormat.KEY_MIME) ?: ""
-                    if (m.startsWith("audio/")) {
-                        audioTrackIndex = i
-                        mediaFormat = f
-                        break
-                    }
-                }
-
-                if (audioTrackIndex < 0 || mediaFormat == null) {
-                    Log.w(tag, "No audio stream found via MediaExtractor: ${track.title}. Falling back to MediaPlayer.")
-                    cleanupDecoders(releaseAudioTrack = false)
-                    withContext(Dispatchers.Main) {
-                        playWithMediaPlayer(track)
-                    }
-                    return
-                }
-
-                extractor.selectTrack(audioTrackIndex)
-
-                streamSampleRate = if (mediaFormat.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
-                    mediaFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-                } else 44100
-
-                streamChannels = if (mediaFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
-                    mediaFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-                } else 2
-
-                val mime = mediaFormat.getString(MediaFormat.KEY_MIME) ?: ""
-                codec = try {
-                    MediaCodec.createDecoderByType(mime)
+            var extractorSet = false
+            if (resolvedHandle.fd != null && resolvedHandle.fd.valid()) {
+                try {
+                    extractor.setDataSource(resolvedHandle.fd, resolvedHandle.offset, resolvedHandle.length)
+                    extractorSet = true
                 } catch (e: Exception) {
-                    Log.w(tag, "No native decoder for $mime. Falling back to MediaPlayer.", e)
-                    cleanupDecoders(releaseAudioTrack = false)
-                    withContext(Dispatchers.Main) {
-                        playWithMediaPlayer(track)
-                    }
-                    return
+                    Log.w(tag, "MediaExtractor FD setDataSource failed, trying URI", e)
                 }
-
-                mediaCodec = codec
-                isUsingFallback = false
-                codec.configure(mediaFormat, null, null, 0)
-                codec.start()
-
-                streamEncoding = if (mediaFormat.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
-                    mediaFormat.getInteger(MediaFormat.KEY_PCM_ENCODING)
-                } else {
-                    AudioFormat.ENCODING_PCM_16BIT
+            }
+            if (!extractorSet && !resolvedHandle.directPath.isNullOrBlank()) {
+                try {
+                    if (resolvedHandle.directPath.startsWith("content://")) {
+                        extractor.setDataSource(context, Uri.parse(resolvedHandle.directPath), null)
+                    } else {
+                        extractor.setDataSource(resolvedHandle.directPath)
+                    }
+                    extractorSet = true
+                } catch (e: Exception) {
+                    Log.w(tag, "MediaExtractor direct path setDataSource failed", e)
                 }
             }
 
-            sampleRate = streamSampleRate
-            dspPipeline.setSampleRate(streamSampleRate.toFloat())
-            createAudioTrack(streamSampleRate)
+            if (!extractorSet) {
+                val errMsg = "Cannot resolve data source for: ${track.uriString}"
+                withContext(Dispatchers.Main) {
+                    onPlaybackError?.invoke(PlaybackError.DataSourceError(track.uriString, errMsg))
+                }
+                throw IOException(errMsg)
+            }
+
+            var audioTrackIndex = -1
+            for (i in 0 until extractor.trackCount) {
+                val f = extractor.getTrackFormat(i)
+                val m = f.getString(MediaFormat.KEY_MIME) ?: ""
+                if (m.startsWith("audio/")) {
+                    audioTrackIndex = i
+                    mediaFormat = f
+                    break
+                }
+            }
+
+            if (audioTrackIndex < 0 || mediaFormat == null) {
+                Log.w(tag, "No audio stream found via MediaExtractor: ${track.title}. Falling back to MediaPlayer.")
+                cleanupDecoders(releaseAudioTrack = false)
+                withContext(Dispatchers.Main) {
+                    playWithMediaPlayer(track)
+                }
+                return
+            }
+
+            extractor.selectTrack(audioTrackIndex)
+
+            streamSampleRate = if (mediaFormat.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
+                mediaFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+            } else 44100
+
+            streamChannels = if (mediaFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
+                mediaFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+            } else 2
+
+            val mime = mediaFormat.getString(MediaFormat.KEY_MIME) ?: ""
+            codec = try {
+                MediaCodec.createDecoderByType(mime)
+            } catch (e: Exception) {
+                Log.w(tag, "No native decoder for $mime. Falling back to MediaPlayer.", e)
+                cleanupDecoders(releaseAudioTrack = false)
+                withContext(Dispatchers.Main) {
+                    playWithMediaPlayer(track)
+                }
+                return
+            }
+
+            mediaCodec = codec
+            isUsingFallback = false
+            codec.configure(mediaFormat, null, null, 0)
+            codec.start()
+
+            // Initialize or verify AudioTrack matches stream sample rate
+            ensureAudioTrack(streamSampleRate, forceRecreate = false)
+            sampleRate = audioTrack?.sampleRate ?: streamSampleRate
+            dspPipeline.setSampleRate(sampleRate.toFloat())
 
             // Emit verified real stream container metadata
-            val bitDepth = when (streamEncoding) {
-                AudioFormat.ENCODING_PCM_FLOAT -> 32
-                AudioFormat.ENCODING_PCM_24BIT_PACKED -> 24
-                AudioFormat.ENCODING_PCM_32BIT -> 32
-                AudioFormat.ENCODING_PCM_8BIT -> 8
-                else -> 16
-            }
-            val bitrateKbps = if (mediaFormat != null && mediaFormat.containsKey(MediaFormat.KEY_BIT_RATE)) {
+            val containerBitDepth = if (mediaFormat.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
+                when (mediaFormat.getInteger(MediaFormat.KEY_PCM_ENCODING)) {
+                    AudioFormat.ENCODING_PCM_FLOAT -> 32
+                    AudioFormat.ENCODING_PCM_24BIT_PACKED -> 24
+                    AudioFormat.ENCODING_PCM_32BIT -> 32
+                    AudioFormat.ENCODING_PCM_8BIT -> 8
+                    else -> 16
+                }
+            } else if (track.bitDepth in listOf(16, 24, 32)) {
+                track.bitDepth
+            } else 16
+
+            val bitrateKbps = if (mediaFormat.containsKey(MediaFormat.KEY_BIT_RATE)) {
                 mediaFormat.getInteger(MediaFormat.KEY_BIT_RATE) / 1000
             } else {
-                ((streamSampleRate.toLong() * bitDepth * streamChannels) / 1000L).toInt()
+                ((streamSampleRate.toLong() * containerBitDepth * streamChannels) / 1000L).toInt()
             }
             val verifiedTrack = track.copy(
                 sampleRate = streamSampleRate,
-                bitDepth = bitDepth,
+                bitDepth = containerBitDepth,
                 bitrateKbps = bitrateKbps,
                 isMetadataVerified = true
             )
@@ -792,35 +647,6 @@ class AudioTrackPlayer(
             var totalFramesWritten: Long = 0L
             var startOffsetMs: Long = 0L
             var baseHeadPosition: Long = (audioTrack?.playbackHeadPosition?.toLong() ?: 0L) and 0xFFFFFFFFL
-
-            // If we have predecoded frames from gapless preparation, stream them immediately
-            if (prebuffered != null && prebuffered.predecodedFrames > 0) {
-                val preFrames = prebuffered.predecodedFrames
-                val totalPreSamples = preFrames * 2
-                dspPipeline.processInterleavedStereo(prebuffered.predecodedFloatBuffer, preFrames)
-
-                var samplesWritten = 0
-                if (isFloatTrack) {
-                    while (samplesWritten < totalPreSamples && currentCoroutineContext().isActive && status != PlayerStatus.STOPPED && sessionId == currentSessionId.get()) {
-                        val count = totalPreSamples - samplesWritten
-                        val written = audioTrack?.write(prebuffered.predecodedFloatBuffer, samplesWritten, count, AudioTrack.WRITE_BLOCKING) ?: 0
-                        if (written > 0) samplesWritten += written else break
-                    }
-                } else {
-                    if (shortBuffer.size < totalPreSamples) {
-                        shortBuffer = ShortArray(totalPreSamples)
-                    }
-                    for (i in 0 until totalPreSamples) {
-                        shortBuffer[i] = (prebuffered.predecodedFloatBuffer[i].coerceIn(-1.0f, 1.0f) * 32767.0f).toInt().toShort()
-                    }
-                    while (samplesWritten < totalPreSamples && currentCoroutineContext().isActive && status != PlayerStatus.STOPPED && sessionId == currentSessionId.get()) {
-                        val count = totalPreSamples - samplesWritten
-                        val written = audioTrack?.write(shortBuffer, samplesWritten, count, AudioTrack.WRITE_BLOCKING) ?: 0
-                        if (written > 0) samplesWritten += written else break
-                    }
-                }
-                totalFramesWritten += samplesWritten / 2
-            }
 
             while (currentCoroutineContext().isActive && status != PlayerStatus.STOPPED && sessionId == currentSessionId.get()) {
                 if (status == PlayerStatus.PAUSED) {
@@ -912,7 +738,7 @@ class AudioTrackPlayer(
                                             samplesWritten += written
                                         } else if (written < 0) {
                                             Log.w(tag, "AudioTrack float write error: $written. Rebuilding track...")
-                                            createAudioTrack(streamSampleRate)
+                                            ensureAudioTrack(streamSampleRate, forceRecreate = true)
                                             baseHeadPosition = (audioTrack?.playbackHeadPosition?.toLong() ?: 0L) and 0xFFFFFFFFL
                                             break
                                         } else {
@@ -934,7 +760,7 @@ class AudioTrackPlayer(
                                             samplesWritten += written
                                         } else if (written < 0) {
                                             Log.w(tag, "AudioTrack 16-bit write error: $written. Rebuilding track...")
-                                            createAudioTrack(streamSampleRate)
+                                            ensureAudioTrack(streamSampleRate, forceRecreate = true)
                                             baseHeadPosition = (audioTrack?.playbackHeadPosition?.toLong() ?: 0L) and 0xFFFFFFFFL
                                             break
                                         } else {
@@ -969,23 +795,37 @@ class AudioTrackPlayer(
                     }
                 } else if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                     val newFormat = codec.outputFormat
+                    Log.d(tag, "MediaCodec INFO_OUTPUT_FORMAT_CHANGED: $newFormat")
+
                     if (newFormat.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
                         val newRate = newFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-                        if (newRate != streamSampleRate) {
+                        if (newRate > 0) {
                             streamSampleRate = newRate
-                            sampleRate = streamSampleRate
-                            dspPipeline.setSampleRate(streamSampleRate.toFloat())
-                            createAudioTrack(streamSampleRate)
-                            baseHeadPosition = (audioTrack?.playbackHeadPosition?.toLong() ?: 0L) and 0xFFFFFFFFL
                         }
                     }
                     if (newFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
-                        streamChannels = newFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                        val newChannels = newFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                        if (newChannels > 0) {
+                            streamChannels = newChannels
+                        }
                     }
-                    if (newFormat.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
-                        streamEncoding = newFormat.getInteger(MediaFormat.KEY_PCM_ENCODING)
-                        Log.d(tag, "Format changed: encoding=$streamEncoding, channels=$streamChannels, rate=$streamSampleRate")
+                    streamEncoding = if (newFormat.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
+                        newFormat.getInteger(MediaFormat.KEY_PCM_ENCODING)
+                    } else {
+                        AudioFormat.ENCODING_PCM_16BIT
                     }
+
+                    // Strict Sample Rate Guard: Rebuild AudioTrack if it does not match decoder output rate
+                    val currentTrackRate = audioTrack?.sampleRate ?: -1
+                    if (audioTrack == null || currentTrackRate != streamSampleRate || audioTrack?.state != AudioTrack.STATE_INITIALIZED) {
+                        Log.i(tag, "Format change sample rate synchronization: track=$currentTrackRate, decoder=$streamSampleRate. Rebuilding AudioTrack.")
+                        ensureAudioTrack(streamSampleRate, forceRecreate = true)
+                        baseHeadPosition = (audioTrack?.playbackHeadPosition?.toLong() ?: 0L) and 0xFFFFFFFFL
+                    }
+
+                    sampleRate = audioTrack?.sampleRate ?: streamSampleRate
+                    dspPipeline.setSampleRate(sampleRate.toFloat())
+
                     val updatedDepth = when (streamEncoding) {
                         AudioFormat.ENCODING_PCM_FLOAT -> 32
                         AudioFormat.ENCODING_PCM_24BIT_PACKED -> 24
@@ -1052,20 +892,23 @@ class AudioTrackPlayer(
         }
     }
 
-    private fun createAudioTrack(sr: Int) {
+    private fun ensureAudioTrack(sr: Int, forceRecreate: Boolean = false) {
         val existing = audioTrack
-        if (existing != null && sampleRate == sr && existing.state == AudioTrack.STATE_INITIALIZED) {
+        if (!forceRecreate && existing != null && existing.state == AudioTrack.STATE_INITIALIZED && existing.sampleRate == sr) {
             try {
                 if (existing.playState != AudioTrack.PLAYSTATE_PLAYING) {
                     existing.play()
                 }
+                sampleRate = sr
                 return
             } catch (e: Exception) {
-                Log.w(tag, "Failed to reuse active AudioTrack, recreating", e)
+                Log.w(tag, "Failed to reuse active AudioTrack at $sr Hz, recreating", e)
             }
         }
 
         try {
+            audioTrack?.pause()
+            audioTrack?.flush()
             audioTrack?.stop()
             audioTrack?.release()
         } catch (_: Exception) {}
@@ -1100,19 +943,21 @@ class AudioTrackPlayer(
                     track.play()
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && playbackSpeed != 1.0f) {
                         try {
-                            track.playbackParams = PlaybackParams().setSpeed(playbackSpeed)
+                            val params = track.playbackParams
+                            track.playbackParams = params.setSpeed(playbackSpeed).setPitch(1.0f)
                         } catch (_: Exception) {}
                     }
                     audioTrack = track
                     isFloatTrack = true
+                    sampleRate = track.sampleRate
                     created = true
-                    Log.d(tag, "AudioTrack initialized successfully in 32-bit FLOAT mode ($sr Hz)")
-                    AudioDiagnostics.log("AudioTrack initialized in 32-bit FLOAT mode ($sr Hz)")
+                    Log.d(tag, "AudioTrack initialized successfully in 32-bit FLOAT mode (${track.sampleRate} Hz)")
+                    AudioDiagnostics.log("AudioTrack initialized in 32-bit FLOAT mode (${track.sampleRate} Hz)")
                 } else {
                     track.release()
                 }
             } catch (e: Exception) {
-                Log.w(tag, "Float AudioTrack creation failed, falling back to 16-bit PCM", e)
+                Log.w(tag, "Float AudioTrack creation failed for $sr Hz, falling back to 16-bit PCM", e)
             }
         }
 
@@ -1142,19 +987,22 @@ class AudioTrackPlayer(
                     track.play()
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && playbackSpeed != 1.0f) {
                         try {
-                            track.playbackParams = PlaybackParams().setSpeed(playbackSpeed)
+                            val params = track.playbackParams
+                            track.playbackParams = params.setSpeed(playbackSpeed).setPitch(1.0f)
                         } catch (_: Exception) {}
                     }
                     audioTrack = track
                     isFloatTrack = false
-                    Log.d(tag, "AudioTrack initialized successfully in 16-bit PCM mode ($sr Hz)")
-                    AudioDiagnostics.log("AudioTrack initialized in 16-bit PCM mode ($sr Hz)")
+                    sampleRate = track.sampleRate
+                    created = true
+                    Log.d(tag, "AudioTrack initialized successfully in 16-bit PCM mode (${track.sampleRate} Hz)")
+                    AudioDiagnostics.log("AudioTrack initialized in 16-bit PCM mode (${track.sampleRate} Hz)")
                 } else {
                     track.release()
-                    throw IllegalStateException("Failed to initialize AudioTrack in 16-bit mode")
+                    throw IllegalStateException("Failed to initialize AudioTrack in 16-bit mode ($sr Hz)")
                 }
             } catch (e: Exception) {
-                Log.e(tag, "Universal 16-bit AudioTrack creation failed", e)
+                Log.e(tag, "Universal 16-bit AudioTrack creation failed for $sr Hz", e)
                 throw e
             }
         }
