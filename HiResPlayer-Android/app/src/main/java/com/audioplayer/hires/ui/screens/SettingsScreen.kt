@@ -103,7 +103,7 @@ fun SettingsScreen(viewModel: MainViewModel) {
                 SettingsSwitchRow(
                     icon = Icons.Default.AllInclusive,
                     title = "Gapless Playback",
-                    subtitle = "Pre-buffer next track for zero-gap audio transition",
+                    subtitle = "Seamless serial AudioTrack handoff between consecutive tracks",
                     checked = isGaplessEnabled,
                     onCheckedChange = { viewModel.setGaplessEnabled(it) }
                 )
@@ -185,13 +185,13 @@ fun SettingsScreen(viewModel: MainViewModel) {
                 )
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
-                    text = "Version 3.0 (LuxNote Master Architecture)",
+                    text = "Version ${com.audioplayer.hires.BuildConfig.VERSION_NAME} (LuxNote Master Architecture)",
                     color = StudioColors.TextSecondary,
                     style = MaterialTheme.typography.bodySmall
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "• Native C++20 SIMD DSP Engine (libhires_audio.so)\n• Bit-Perfect USB DAC HAL Route\n• 100% Offline & Zero Network Permissions",
+                    text = "• Native C++20 SIMD DSP Engine (libhires_audio.so)\n• Format-Aware Low-Latency PCM Pipeline\n• 100% Offline & Zero Network Permissions",
                     color = StudioColors.TextMuted,
                     fontSize = 12.sp,
                     lineHeight = 18.sp

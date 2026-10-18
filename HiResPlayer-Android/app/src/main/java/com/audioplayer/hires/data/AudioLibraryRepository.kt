@@ -436,8 +436,9 @@ class AudioLibraryRepository(private val context: Context) {
                 val id = obj.getLong("id")
                 val title = obj.getString("title")
 
-                // Completely filter out any legacy synthetic/reference tracks
-                if (id == 999999L || title.contains("Reference", ignoreCase = true)) {
+                // Only filter out legacy mock synthetic fixture if explicitly flagged with synthetic URI
+                val uriStr = obj.optString("uriString", "")
+                if (id == 999999L && uriStr.startsWith("luxnote://synthetic")) {
                     continue
                 }
 

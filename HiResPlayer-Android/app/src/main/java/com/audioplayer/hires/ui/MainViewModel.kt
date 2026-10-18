@@ -171,7 +171,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _folders.value = repository.extractFolders(initialTracks)
                 _queues.value = loadedQueues
                 if (playbackManager.activeQueue.value.isEmpty()) {
-                    playbackManager.setActiveQueue(firstQ.id, qTracks, initialIndex)
+                    if (playbackManager.isRestoreSessionEnabled.value && qTracks.isNotEmpty()) {
+                        val restoredTrack = qTracks[initialIndex]
+                        playbackManager.restoreSessionState(
+                            queueId = firstQ.id,
+                            tracks = qTracks,
+                            index = initialIndex,
+                            track = restoredTrack,
+                            positionMs = firstQ.positionMs
+                        )
+                    } else {
+                        playbackManager.setActiveQueue(firstQ.id, qTracks, initialIndex)
+                    }
                 }
                 playbackManager.onVerifiedMetadataUpdated = { verified ->
                     val currentList = _libraryTracks.value

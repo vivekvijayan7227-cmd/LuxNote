@@ -34,12 +34,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.audioplayer.hires.model.PlayerStatus
 import com.audioplayer.hires.model.StudioQueue
 import com.audioplayer.hires.ui.MainViewModel
 import com.audioplayer.hires.ui.StudioScreen
+import com.audioplayer.hires.ui.components.AdaptiveNowPlayingLayout
 import com.audioplayer.hires.ui.components.FftVisualizer
 import com.audioplayer.hires.ui.components.PlaybackSeekBar
 import com.audioplayer.hires.ui.components.TrackArtwork
@@ -95,17 +97,9 @@ fun NowPlayingScreen(viewModel: MainViewModel) {
         label = "angle"
     )
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(StudioColors.Background)
-            .statusBarsPadding()
-            .padding(horizontal = 20.dp, vertical = 8.dp)
-            .verticalScroll(rememberScrollState()),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        // 1. Top Bar (Image 1, 2, 3): Back button on left, Title, Favorite Heart & Menu on right
+    AdaptiveNowPlayingLayout(
+        header = {
+            // 1. Top Bar (Image 1, 2, 3): Back button on left, Title, Favorite Heart & Menu on right
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -201,19 +195,20 @@ fun NowPlayingScreen(viewModel: MainViewModel) {
                 }
             }
         }
-
-        // 2. Center Stage (Image 1, 2, 3): Vinyl Disc / Artwork OR Synchronized Lyrics View
-        if (!showLyricsMode) {
-            Surface(
-                modifier = Modifier
-                    .sizeIn(minWidth = 200.dp, maxWidth = 260.dp, minHeight = 200.dp, maxHeight = 260.dp)
-                    .aspectRatio(1f)
-                    .shadow(16.dp, RoundedCornerShape(20.dp), spotColor = StudioColors.Blue.copy(alpha = 0.2f))
-                    .clip(RoundedCornerShape(20.dp))
-                    .border(1.dp, StudioColors.Divider, RoundedCornerShape(20.dp))
-                    .clickable { showLyricsMode = true },
-                color = StudioColors.SurfaceElevated
-            ) {
+    },
+    artwork = { diameter: Dp ->
+            // 2. Center Stage (Image 1, 2, 3): Vinyl Disc / Artwork OR Synchronized Lyrics View
+            if (!showLyricsMode) {
+                Surface(
+                    modifier = Modifier
+                        .size(diameter)
+                        .aspectRatio(1f)
+                        .shadow(16.dp, RoundedCornerShape(20.dp), spotColor = StudioColors.Blue.copy(alpha = 0.2f))
+                        .clip(RoundedCornerShape(20.dp))
+                        .border(1.dp, StudioColors.Divider, RoundedCornerShape(20.dp))
+                        .clickable { showLyricsMode = true },
+                    color = StudioColors.SurfaceElevated
+                ) {
                 TrackArtwork(
                     artworkUri = track?.artworkUri,
                     trackUri = track?.uriString,
@@ -283,7 +278,7 @@ fun NowPlayingScreen(viewModel: MainViewModel) {
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(240.dp)
+                    .height(diameter.coerceAtLeast(220.dp))
                     .clip(RoundedCornerShape(16.dp))
                     .clickable { showLyricsMode = false },
                 color = StudioColors.Surface,
@@ -328,7 +323,8 @@ fun NowPlayingScreen(viewModel: MainViewModel) {
                 }
             }
         }
-
+    },
+    trackDetails = {
         // 3. Track Details: Title, Artist, and Format Pill (Image 1)
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -371,7 +367,8 @@ fun NowPlayingScreen(viewModel: MainViewModel) {
                 }
             }
         }
-
+    },
+    waveformAndSeek = {
         // 4. Live Audio Waveform & Precision Seek Bar (Image 1, 2)
         Column(modifier = Modifier.fillMaxWidth()) {
             // Live Waveform Visualizer
@@ -423,7 +420,8 @@ fun NowPlayingScreen(viewModel: MainViewModel) {
                 }
             }
         }
-
+    },
+    transportControls = {
         // 5. Primary Transport Controls (Image 1, 2): Shuffle, Prev, 72dp Gold Play, Next, Repeat
         Row(
             modifier = Modifier
@@ -509,7 +507,8 @@ fun NowPlayingScreen(viewModel: MainViewModel) {
                 )
             }
         }
-
+    },
+    bottomActions = {
         // 6. Bottom Action Pills (Image 1): Add to Playlist, Lyrics, EQ Studio, Queue
         Row(
             modifier = Modifier
@@ -548,6 +547,7 @@ fun NowPlayingScreen(viewModel: MainViewModel) {
             )
         }
     }
+)
 
     // Modal: Multi-Queue Switcher Dialog
     if (showQueueSwitcherDialog) {
