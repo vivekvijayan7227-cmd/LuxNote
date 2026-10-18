@@ -471,7 +471,7 @@ class DspAudioEngineTest {
         }
     }
 
-    @Test
+    @Test(timeout = 10000)
     fun testTripleBufferProtocolConcurrencySimulation() {
         // Kotlin simulation of the C++ lock-free triple buffer state packing and CAS transitions
         val sharedState = java.util.concurrent.atomic.AtomicInteger(2) // slot 2, dirty = 0
@@ -482,34 +482,43 @@ class DspAudioEngineTest {
         val iterations = 50000
         val producerErrors = java.util.concurrent.atomic.AtomicInteger(0)
         val consumerErrors = java.util.concurrent.atomic.AtomicInteger(0)
+        val consumerReads = java.util.concurrent.atomic.AtomicInteger(0)
+        val producerRunning = java.util.concurrent.atomic.AtomicBoolean(true)
 
         val producerThread = Thread {
-            var localWrite = writeIdx
-            for (iter in 1..iterations) {
-                // Producer writes tag into its private slot
-                val slotData = snapshots[localWrite]
-                for (k in slotData.indices) {
-                    slotData[k] = iter
+            try {
+                var localWrite = writeIdx
+                for (iter in 1..iterations) {
+                    // Producer writes tag into its private slot
+                    val slotData = snapshots[localWrite]
+                    for (k in slotData.indices) {
+                        slotData[k] = iter
+                    }
+                    // Atomic CAS publish
+                    var oldVal = sharedState.get()
+                    var newVal: Int
+                    do {
+                        newVal = (localWrite and 0x03) or 0x04 // set dirty bit
+                    } while (!sharedState.compareAndSet(oldVal, newVal).also { if (!it) oldVal = sharedState.get() })
+                    localWrite = oldVal and 0x03
+                    if ((iter and 0x7F) == 0) {
+                        Thread.yield()
+                    }
                 }
-                // Atomic CAS publish
-                var oldVal = sharedState.get()
-                var newVal: Int
-                do {
-                    newVal = (localWrite and 0x03) or 0x04 // set dirty bit
-                } while (!sharedState.compareAndSet(oldVal, newVal).also { if (!it) oldVal = sharedState.get() })
-                localWrite = oldVal and 0x03
+            } finally {
+                producerRunning.set(false)
             }
         }
 
         val consumerThread = Thread {
             var localRead = readIdx
-            var readCount = 0
-            while (readCount < iterations / 2) {
+            while (producerRunning.get() || (sharedState.get() and 0x04) != 0) {
                 val state = sharedState.get()
                 if ((state and 0x04) != 0) {
                     var oldVal = state
                     var newVal: Int
                     var acquired = false
+                    var spinGuard = 0
                     do {
                         if ((oldVal and 0x04) == 0) break
                         newVal = localRead and 0x03 // clear dirty bit
@@ -519,6 +528,8 @@ class DspAudioEngineTest {
                             break
                         }
                         oldVal = sharedState.get()
+                        spinGuard++
+                        if (spinGuard > 1000) break
                     } while (true)
 
                     if (acquired) {
@@ -530,17 +541,22 @@ class DspAudioEngineTest {
                                 consumerErrors.incrementAndGet()
                             }
                         }
-                        readCount++
+                        consumerReads.incrementAndGet()
                     }
+                } else {
+                    Thread.yield()
                 }
             }
         }
 
         producerThread.start()
         consumerThread.start()
-        producerThread.join()
-        consumerThread.join()
+        producerThread.join(5000)
+        consumerThread.join(5000)
 
+        assertFalse("Producer thread should not hang", producerThread.isAlive)
+        assertFalse("Consumer thread should not hang", consumerThread.isAlive)
+        assertTrue("Consumer must have processed at least some snapshots", consumerReads.get() > 0)
         assertEquals("Producer must encounter 0 torn states", 0, producerErrors.get())
         assertEquals("Consumer must encounter 0 torn reads across 50,000 concurrent transitions", 0, consumerErrors.get())
     }

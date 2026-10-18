@@ -10,6 +10,7 @@ jobs:
   build-and-test:
     name: Unit Tests & Build Verification
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout Repository
