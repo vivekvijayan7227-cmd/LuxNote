@@ -301,10 +301,11 @@ class AudioTrackPlayer(
     /**
      * Start playing an audio track with serialized session ownership.
      */
-    fun play(track: Track) {
+    fun play(track: Track, initialSeekMs: Long = 0L) {
         val thisSession = currentSessionId.incrementAndGet()
         pendingSeeks.clear()
-        currentPositionMs = 0L
+        currentPositionMs = initialSeekMs.coerceAtLeast(0L)
+        onPositionChanged?.invoke(currentPositionMs)
         val oldJob = playbackJob
         playbackJob = null
         oldJob?.cancel()
@@ -330,7 +331,7 @@ class AudioTrackPlayer(
             } catch (_: Exception) {}
             cleanupDecoders(releaseAudioTrack = false)
             if (thisSession == currentSessionId.get()) {
-                decodeAndStream(track, thisSession)
+                decodeAndStream(track, thisSession, initialSeekMs)
             }
         }
     }
@@ -439,13 +440,14 @@ class AudioTrackPlayer(
         fallbackDataSourceHandle = null
     }
 
-    private fun playWithMediaPlayer(track: Track) {
+    private fun playWithMediaPlayer(track: Track, initialSeekMs: Long = 0L) {
         try {
             cleanupDecoders()
             isUsingFallback = true
-            AudioDiagnostics.log("playWithMediaPlayer starting: '${track.title}' (DSP Bypassed)")
+            AudioDiagnostics.log("playWithMediaPlayer starting: '${track.title}' (DSP Bypassed, initialSeek=${initialSeekMs}ms)")
             val mp = MediaPlayer()
             fallbackPlayer = mp
+            val session = currentSessionId.get()
 
             mp.setAudioAttributes(
                 AudioAttributes.Builder()
@@ -468,16 +470,35 @@ class AudioTrackPlayer(
             }
 
             mp.setOnPreparedListener { player ->
+                if (session != currentSessionId.get()) {
+                    Log.i(tag, "MediaPlayer prepared for stale session $session; releasing player")
+                    try { player.release() } catch (_: Exception) {}
+                    return@setOnPreparedListener
+                }
                 if (status == PlayerStatus.PLAYING) {
-                    player.start()
-                    if (currentPositionMs > 0) {
-                        player.seekTo(currentPositionMs.toInt())
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        try {
+                            val params = player.playbackParams
+                            player.playbackParams = params.setSpeed(playbackSpeed).setPitch(1.0f)
+                        } catch (e: Exception) {
+                            Log.w(tag, "Failed to apply playbackParams to fallback player", e)
+                        }
                     }
-                    AudioDiagnostics.log("MediaPlayer started successfully: ${track.title}")
+                    val targetSeek = if (initialSeekMs > 0L) initialSeekMs else currentPositionMs
+                    if (targetSeek > 0L) {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            player.seekTo(targetSeek, MediaPlayer.SEEK_CLOSEST)
+                        } else {
+                            player.seekTo(targetSeek.toInt())
+                        }
+                    }
+                    player.start()
+                    AudioDiagnostics.log("MediaPlayer started successfully: ${track.title} at ${targetSeek}ms, speed=${playbackSpeed}x")
                 }
             }
 
             mp.setOnCompletionListener {
+                if (session != currentSessionId.get()) return@setOnCompletionListener
                 status = PlayerStatus.STOPPED
                 releaseWakeLock()
                 onStatusChanged?.invoke(status)
@@ -485,6 +506,7 @@ class AudioTrackPlayer(
             }
 
             mp.setOnErrorListener { _, what, extra ->
+                if (session != currentSessionId.get()) return@setOnErrorListener true
                 Log.e(tag, "MediaPlayer error: what=$what, extra=$extra")
                 status = PlayerStatus.STOPPED
                 releaseWakeLock()
@@ -522,7 +544,7 @@ class AudioTrackPlayer(
     /**
      * Decoding and streaming loop via MediaExtractor + MediaCodec + StudioDspPipeline -> AudioTrack.
      */
-    private suspend fun decodeAndStream(track: Track, sessionId: Long = 0L) {
+    private suspend fun decodeAndStream(track: Track, sessionId: Long = 0L, initialSeekMs: Long = 0L) {
         val extractor: MediaExtractor
         val codec: MediaCodec
         val handle: DataSourceHandle?
@@ -606,7 +628,7 @@ class AudioTrackPlayer(
                 Log.w(tag, "No native decoder for $mime. Falling back to MediaPlayer.", e)
                 cleanupDecoders(releaseAudioTrack = false)
                 withContext(Dispatchers.Main) {
-                    playWithMediaPlayer(track)
+                    playWithMediaPlayer(track, initialSeekMs)
                 }
                 return
             }
@@ -651,13 +673,22 @@ class AudioTrackPlayer(
                 onTrackChanged?.invoke(verifiedTrack)
             }
 
+            val initialSeekTargetMs = initialSeekMs.coerceAtLeast(0L)
+            if (initialSeekTargetMs > 0L) {
+                try {
+                    extractor.seekTo(initialSeekTargetMs * 1000L, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+                } catch (e: Exception) {
+                    Log.w(tag, "Initial restore seek failed on extractor", e)
+                }
+            }
+
             val bufferInfo = MediaCodec.BufferInfo()
             var isInputEof = false
             var isOutputEof = false
 
             val timeline = PlaybackTimeline()
             var baseHeadPosition = (audioTrack?.playbackHeadPosition?.toLong() ?: 0L) and 0xFFFFFFFFL
-            timeline.beginSegment(0L, baseHeadPosition, streamSampleRate)
+            timeline.beginSegment(initialSeekTargetMs, baseHeadPosition, streamSampleRate)
             var segmentFramesWritten: Long = 0L
 
             while (currentCoroutineContext().isActive && status != PlayerStatus.STOPPED && sessionId == currentSessionId.get()) {
@@ -759,6 +790,7 @@ class AudioTrackPlayer(
                                         val written = audioTrack?.write(floatBuffer, samplesWritten, countToWrite, AudioTrack.WRITE_BLOCKING) ?: 0
                                         if (written > 0) {
                                             samplesWritten += written
+                                            segmentFramesWritten += (written / 2)
                                         } else if (written < 0) {
                                             Log.w(tag, "AudioTrack float write error: $written. Rebuilding track...")
                                             val oldHead = (audioTrack?.playbackHeadPosition?.toLong() ?: 0L) and 0xFFFFFFFFL
@@ -767,7 +799,7 @@ class AudioTrackPlayer(
                                             baseHeadPosition = (audioTrack?.playbackHeadPosition?.toLong() ?: 0L) and 0xFFFFFFFFL
                                             timeline.beginSegment(oldPosition, baseHeadPosition, streamSampleRate)
                                             segmentFramesWritten = 0L
-                                            break
+                                            continue
                                         } else {
                                             break
                                         }
@@ -785,6 +817,7 @@ class AudioTrackPlayer(
                                         val written = audioTrack?.write(shortBuffer, samplesWritten, countToWrite, AudioTrack.WRITE_BLOCKING) ?: 0
                                         if (written > 0) {
                                             samplesWritten += written
+                                            segmentFramesWritten += (written / 2)
                                         } else if (written < 0) {
                                             Log.w(tag, "AudioTrack 16-bit write error: $written. Rebuilding track...")
                                             val oldHead = (audioTrack?.playbackHeadPosition?.toLong() ?: 0L) and 0xFFFFFFFFL
@@ -793,16 +826,11 @@ class AudioTrackPlayer(
                                             baseHeadPosition = (audioTrack?.playbackHeadPosition?.toLong() ?: 0L) and 0xFFFFFFFFL
                                             timeline.beginSegment(oldPosition, baseHeadPosition, streamSampleRate)
                                             segmentFramesWritten = 0L
-                                            break
+                                            continue
                                         } else {
                                             break
                                         }
                                     }
-                                }
-
-                                val actualFramesWritten = samplesWritten / 2
-                                if (actualFramesWritten > 0) {
-                                    segmentFramesWritten += actualFramesWritten
                                 }
 
                                 // Compute physical hardware played position via segment-aware timeline (AUD-02)
@@ -849,6 +877,16 @@ class AudioTrackPlayer(
                     val currentTrackRate = audioTrack?.sampleRate ?: -1
                     if (audioTrack == null || currentTrackRate != streamSampleRate || audioTrack?.state != AudioTrack.STATE_INITIALIZED) {
                         Log.i(tag, "Format change sample rate synchronization: track=$currentTrackRate, decoder=$streamSampleRate. Rebuilding AudioTrack.")
+                        if (audioTrack != null && segmentFramesWritten > 0L && currentTrackRate > 0) {
+                            val drainLimitMs = ((segmentFramesWritten * 1000L) / currentTrackRate).coerceIn(20L, 400L)
+                            val drainStart = System.currentTimeMillis()
+                            while (currentCoroutineContext().isActive && status == PlayerStatus.PLAYING && sessionId == currentSessionId.get() && (System.currentTimeMillis() - drainStart) < drainLimitMs) {
+                                val h = (audioTrack?.playbackHeadPosition?.toLong() ?: 0L) and 0xFFFFFFFFL
+                                val played = (h - baseHeadPosition) and 0xFFFFFFFFL
+                                if (played >= segmentFramesWritten) break
+                                delay(15)
+                            }
+                        }
                         val oldHead = (audioTrack?.playbackHeadPosition?.toLong() ?: 0L) and 0xFFFFFFFFL
                         val oldPosition = timeline.checkpointBeforeSinkRecreate(oldHead)
                         ensureAudioTrack(streamSampleRate, forceRecreate = true)
@@ -890,10 +928,16 @@ class AudioTrackPlayer(
             if (isOutputEof) {
                 // Wait for all written frames in the current sink segment to finish playing through hardware (AUD-02)
                 val segmentStartHead = baseHeadPosition
+                val drainMaxMs = if (streamSampleRate > 0) ((segmentFramesWritten * 1000L) / streamSampleRate) + 500L else 2000L
+                val drainStart = System.currentTimeMillis()
                 while (currentCoroutineContext().isActive && status == PlayerStatus.PLAYING && sessionId == currentSessionId.get()) {
                     val currentHead = (audioTrack?.playbackHeadPosition?.toLong() ?: 0L) and 0xFFFFFFFFL
                     val playedInSegment = ((currentHead - segmentStartHead) and 0xFFFFFFFFL)
                     if (playedInSegment >= segmentFramesWritten) break
+                    if (System.currentTimeMillis() - drainStart > drainMaxMs) {
+                        Log.w(tag, "EOF drain reached timeout of ${drainMaxMs}ms; completing playback")
+                        break
+                    }
                     delay(20)
                 }
                 // Retain audioTrack for gapless handoff to next candidate track

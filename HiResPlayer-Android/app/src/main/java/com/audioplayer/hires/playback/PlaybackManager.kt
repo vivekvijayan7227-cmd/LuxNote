@@ -233,59 +233,28 @@ class PlaybackManager private constructor(private val context: Context) {
 
     fun setAutoResumeEnabled(enabled: Boolean) = setResumeAfterInterruptionEnabled(enabled)
 
-    private var audioFocusRequest: AudioFocusRequest? = null
-
-    fun requestAudioFocus(): Boolean {
-        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return true
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val playbackAttributes = AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_MEDIA)
-                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                .build()
-
-            val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-                .setAudioAttributes(playbackAttributes)
-                .setAcceptsDelayedFocusGain(true)
-                .setWillPauseWhenDucked(false)
-                .setOnAudioFocusChangeListener { focusChange ->
-                    when (focusChange) {
-                        AudioManager.AUDIOFOCUS_LOSS -> pausePlayback()
-                        AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> pausePlayback()
-                        AudioManager.AUDIOFOCUS_GAIN -> {
-                            if (_isResumeAfterInterruptionEnabled.value && _playerStatus.value == PlayerStatus.PAUSED) {
-                                resumePlayback()
-                            }
-                        }
-                    }
-                }
-                .build()
-            audioFocusRequest = request
-            audioManager.requestAudioFocus(request) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
-        } else {
-            @Suppress("DEPRECATION")
-            audioManager.requestAudioFocus(
-                { focusChange ->
-                    when (focusChange) {
-                        AudioManager.AUDIOFOCUS_LOSS -> pausePlayback()
-                        AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> pausePlayback()
-                        AudioManager.AUDIOFOCUS_GAIN -> {
-                            if (_isResumeAfterInterruptionEnabled.value && _playerStatus.value == PlayerStatus.PAUSED) {
-                                resumePlayback()
-                            }
-                        }
-                    }
-                },
-                AudioManager.STREAM_MUSIC,
-                AudioManager.AUDIOFOCUS_GAIN
-            ) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+    val audioFocusManager = AudioFocusManager(
+        context = context,
+        onPauseRequested = { pausePlayback(isInternalInterruption = true) },
+        onResumeRequested = {
+            if (_isResumeAfterInterruptionEnabled.value) {
+                resumePlayback()
+            }
         }
-    }
+    )
 
     fun setActiveQueue(queueId: String, tracks: List<Track>, startIndex: Int = 0) {
         _activeQueueId.value = queueId
         _activeQueue.value = tracks
         _currentQueueIndex.value = if (tracks.isNotEmpty()) startIndex.coerceIn(0, tracks.size - 1) else 0
     }
+
+    data class RestoredPlaybackStart(
+        val trackId: Long,
+        val initialPositionMs: Long
+    )
+
+    private var pendingRestoredStart: RestoredPlaybackStart? = null
 
     fun restoreSessionState(
         queueId: String,
@@ -299,7 +268,7 @@ class PlaybackManager private constructor(private val context: Context) {
         _currentQueueIndex.value = if (tracks.isNotEmpty()) index.coerceIn(0, tracks.size - 1) else 0
         _currentTrack.value = track
         _positionMs.value = positionMs
-        audioPlayer.seekTo(positionMs)
+        pendingRestoredStart = if (positionMs > 0L) RestoredPlaybackStart(track.id, positionMs) else null
         updateBitPerfectStatus()
     }
 
@@ -318,7 +287,7 @@ class PlaybackManager private constructor(private val context: Context) {
             }
         }
 
-        val focusGranted = requestAudioFocus()
+        val focusGranted = audioFocusManager.requestAudioFocus(isCurrentlyPlaying = _playerStatus.value == PlayerStatus.PLAYING)
         if (!focusGranted) {
             Log.w("PlaybackManager", "Audio focus not granted; deferring audible playback")
             _currentTrack.value = track
@@ -326,9 +295,18 @@ class PlaybackManager private constructor(private val context: Context) {
             return
         }
 
+        val initialSeekMs = if (pendingRestoredStart != null && pendingRestoredStart?.trackId == track.id) {
+            val pos = pendingRestoredStart!!.initialPositionMs
+            pendingRestoredStart = null
+            pos
+        } else {
+            pendingRestoredStart = null
+            0L
+        }
+
         _currentTrack.value = track
         syncForegroundService()
-        audioPlayer.play(track)
+        audioPlayer.play(track, initialSeekMs = initialSeekMs)
         updateBitPerfectStatus()
     }
 
@@ -339,7 +317,7 @@ class PlaybackManager private constructor(private val context: Context) {
         _currentQueueIndex.value = clampedIndex
         val track = tracks[clampedIndex]
 
-        val focusGranted = requestAudioFocus()
+        val focusGranted = audioFocusManager.requestAudioFocus(isCurrentlyPlaying = _playerStatus.value == PlayerStatus.PLAYING)
         if (!focusGranted) {
             Log.w("PlaybackManager", "Audio focus not granted; deferring audible playback")
             _currentTrack.value = track
@@ -347,14 +325,23 @@ class PlaybackManager private constructor(private val context: Context) {
             return
         }
 
+        val initialSeekMs = if (pendingRestoredStart != null && pendingRestoredStart?.trackId == track.id) {
+            val pos = pendingRestoredStart!!.initialPositionMs
+            pendingRestoredStart = null
+            pos
+        } else {
+            pendingRestoredStart = null
+            0L
+        }
+
         _currentTrack.value = track
         syncForegroundService()
-        audioPlayer.play(track)
+        audioPlayer.play(track, initialSeekMs = initialSeekMs)
         updateBitPerfectStatus()
     }
 
     fun resumePlayback() {
-        val focusGranted = requestAudioFocus()
+        val focusGranted = audioFocusManager.requestAudioFocus(isCurrentlyPlaying = _playerStatus.value == PlayerStatus.PLAYING)
         if (!focusGranted) {
             Log.w("PlaybackManager", "Audio focus not granted on resume")
             return
@@ -362,23 +349,37 @@ class PlaybackManager private constructor(private val context: Context) {
         if (_playerStatus.value == PlayerStatus.PAUSED) {
             audioPlayer.resume()
         } else if (_currentTrack.value != null) {
-            audioPlayer.play(_currentTrack.value!!)
+            val track = _currentTrack.value!!
+            val initialSeekMs = if (pendingRestoredStart != null && pendingRestoredStart?.trackId == track.id) {
+                val pos = pendingRestoredStart!!.initialPositionMs
+                pendingRestoredStart = null
+                pos
+            } else {
+                0L
+            }
+            audioPlayer.play(track, initialSeekMs = initialSeekMs)
         } else if (_activeQueue.value.isNotEmpty()) {
             val idx = _currentQueueIndex.value.coerceIn(0, _activeQueue.value.size - 1)
             playTrack(_activeQueue.value[idx])
         }
     }
 
-    fun pausePlayback() {
+    fun pausePlayback(isInternalInterruption: Boolean = false) {
+        if (!isInternalInterruption) {
+            audioFocusManager.onUserPaused()
+        }
         audioPlayer.pause()
     }
 
     fun stopPlayback() {
+        audioFocusManager.abandonAudioFocus()
+        pendingRestoredStart = null
         audioPlayer.stop()
         _positionMs.value = 0L
     }
 
     fun seekTo(positionMs: Long) {
+        pendingRestoredStart = null
         audioPlayer.seekTo(positionMs)
         _positionMs.value = positionMs
     }

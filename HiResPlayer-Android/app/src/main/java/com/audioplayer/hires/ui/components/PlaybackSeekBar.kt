@@ -31,6 +31,7 @@ import com.audioplayer.hires.ui.theme.StudioColors
 fun PlaybackSeekBar(
     positionMs: Long,
     durationMs: Long,
+    trackId: Long = 0L,
     onSeek: (Long) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -38,9 +39,9 @@ fun PlaybackSeekBar(
     val playable = duration > 0L
     val safePosition = positionMs.coerceIn(0L, duration)
 
-    // Reset local gesture state if the duration changes across tracks.
-    var isDragging by remember(durationMs) { mutableStateOf(false) }
-    var dragValue by remember(durationMs) { mutableFloatStateOf(0f) }
+    // Reset local gesture state if track identity or duration changes across tracks.
+    var isDragging by remember(trackId, durationMs) { mutableStateOf(false) }
+    var dragValue by remember(trackId, durationMs) { mutableFloatStateOf(0f) }
     val sliderMax = duration.coerceAtLeast(1L).toFloat()
     val shownValue = if (isDragging) dragValue.coerceIn(0f, sliderMax)
                      else safePosition.toFloat()

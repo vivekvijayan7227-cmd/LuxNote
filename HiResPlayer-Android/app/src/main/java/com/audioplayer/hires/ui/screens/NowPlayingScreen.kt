@@ -109,7 +109,7 @@ fun NowPlayingScreen(viewModel: MainViewModel) {
         ) {
             IconButton(
                 onClick = { viewModel.navigateBack() },
-                modifier = Modifier.size(42.dp)
+                modifier = Modifier.size(48.dp)
             ) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.ArrowBack,
@@ -141,7 +141,7 @@ fun NowPlayingScreen(viewModel: MainViewModel) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(
                     onClick = { track?.let { viewModel.toggleFavorite(it.id) } },
-                    modifier = Modifier.size(42.dp)
+                    modifier = Modifier.size(48.dp)
                 ) {
                     Icon(
                         imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
@@ -153,7 +153,7 @@ fun NowPlayingScreen(viewModel: MainViewModel) {
                 Box {
                     IconButton(
                         onClick = { showMoreMenu = true },
-                        modifier = Modifier.size(42.dp)
+                        modifier = Modifier.size(48.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.MoreVert,
@@ -388,6 +388,7 @@ fun NowPlayingScreen(viewModel: MainViewModel) {
             PlaybackSeekBar(
                 positionMs = positionMs,
                 durationMs = durationMs,
+                trackId = track?.id ?: 0L,
                 onSeek = { viewModel.seekTo(it) }
             )
         }
