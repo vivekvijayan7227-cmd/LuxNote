@@ -75,8 +75,8 @@ fun AdaptiveNowPlayingLayout(
                         artwork(wideArtSize)
                     }
                     Column(
-                        modifier = Modifier.weight(1f),
-                        verticalArrangement = Arrangement.spacedBy(20.dp),
+                        modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(16.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         trackDetails()
@@ -113,9 +113,9 @@ fun AdaptiveNowPlayingLayout(
             ) {
                 header()
                 Column(
-                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    modifier = Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()),
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.SpaceEvenly
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     artwork(portraitArtSize)
                     trackDetails()

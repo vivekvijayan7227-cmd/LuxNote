@@ -22,6 +22,8 @@ class AudioFocusManager(
     private val context: Context? = null,
     private val onPauseRequested: () -> Unit,
     private val onResumeRequested: () -> Unit,
+    private val isPlaybackActive: () -> Boolean = { true },
+    private val onDelayedFocusGranted: (() -> Unit)? = null,
     audioManagerOverride: AudioManager? = null
 ) : AudioManager.OnAudioFocusChangeListener {
 
@@ -115,6 +117,9 @@ class AudioFocusManager(
     @Synchronized
     fun onUserPaused() {
         wasPlayingBeforeFocusLoss = false
+        if (focusState == FocusState.PENDING) {
+            focusState = FocusState.NONE
+        }
     }
 
     /**
@@ -148,21 +153,31 @@ class AudioFocusManager(
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
                 // Temporary focus loss (e.g., incoming telephone call)
                 focusState = FocusState.LOST_TRANSIENT
-                wasPlayingBeforeFocusLoss = true
-                onPauseRequested.invoke()
+                val active = isPlaybackActive()
+                wasPlayingBeforeFocusLoss = active
+                if (active) {
+                    onPauseRequested.invoke()
+                }
             }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
                 // System notification: pause without ducking for high-fidelity audio
                 focusState = FocusState.LOST_TRANSIENT
-                wasPlayingBeforeFocusLoss = true
-                onPauseRequested.invoke()
+                val active = isPlaybackActive()
+                wasPlayingBeforeFocusLoss = active
+                if (active) {
+                    onPauseRequested.invoke()
+                }
             }
             AudioManager.AUDIOFOCUS_GAIN -> {
                 // Regained focus
-                val shouldResume = (focusState == FocusState.LOST_TRANSIENT || focusState == FocusState.PENDING) && wasPlayingBeforeFocusLoss
+                val wasPending = (focusState == FocusState.PENDING)
+                val shouldResume = (focusState == FocusState.LOST_TRANSIENT && wasPlayingBeforeFocusLoss)
                 focusState = FocusState.GRANTED
                 wasPlayingBeforeFocusLoss = false
-                if (shouldResume) {
+                if (wasPending) {
+                    Log.d(TAG, "Delayed audio focus granted; notifying caller")
+                    onDelayedFocusGranted?.invoke()
+                } else if (shouldResume) {
                     Log.d(TAG, "Auto-resuming after transient focus interruption")
                     onResumeRequested.invoke()
                 } else {

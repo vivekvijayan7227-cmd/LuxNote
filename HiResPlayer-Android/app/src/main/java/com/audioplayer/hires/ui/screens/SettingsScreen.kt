@@ -102,8 +102,8 @@ fun SettingsScreen(viewModel: MainViewModel) {
             Column {
                 SettingsSwitchRow(
                     icon = Icons.Default.AllInclusive,
-                    title = "Gapless Playback",
-                    subtitle = "Seamless serial AudioTrack handoff between consecutive tracks",
+                    title = "Continuous Playback",
+                    subtitle = "Maintains active serial AudioTrack sink across matching tracks",
                     checked = isGaplessEnabled,
                     onCheckedChange = { viewModel.setGaplessEnabled(it) }
                 )
@@ -195,6 +195,13 @@ fun SettingsScreen(viewModel: MainViewModel) {
                     color = StudioColors.TextMuted,
                     fontSize = 12.sp,
                     lineHeight = 18.sp
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    text = "Audio Pipeline Integrity: ${viewModel.getAudioDiagnosticsSummary()}",
+                    color = StudioColors.TextSecondary,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium
                 )
             }
         }

@@ -16,8 +16,8 @@ android {
         applicationId = "com.audioplayer.hires"
         minSdk = 24
         targetSdk = 36
-        versionCode = 9
-        versionName = "3.4.4"
+        versionCode = 10
+        versionName = "3.4.5"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")

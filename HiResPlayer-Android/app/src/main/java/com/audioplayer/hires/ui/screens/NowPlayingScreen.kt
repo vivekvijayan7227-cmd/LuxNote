@@ -97,6 +97,13 @@ fun NowPlayingScreen(viewModel: MainViewModel) {
         label = "angle"
     )
 
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        viewModel.setVisualizerActive(true)
+        onDispose {
+            viewModel.setVisualizerActive(false)
+        }
+    }
+
     AdaptiveNowPlayingLayout(
         header = {
             // 1. Top Bar (Image 1, 2, 3): Back button on left, Title, Favorite Heart & Menu on right
@@ -230,9 +237,15 @@ fun NowPlayingScreen(viewModel: MainViewModel) {
                             ),
                         contentAlignment = Alignment.Center
                     ) {
+                        val vinylSize = diameter * 0.90f
+                        val groove1 = vinylSize * 0.81f
+                        val groove2 = vinylSize * 0.62f
+                        val groove3 = vinylSize * 0.43f
+                        val hubSize = vinylSize * 0.30f
+
                         Box(
                             modifier = Modifier
-                                .size(210.dp)
+                                .size(vinylSize)
                                 .clip(CircleShape)
                                 .background(
                                     Brush.radialGradient(
@@ -248,14 +261,14 @@ fun NowPlayingScreen(viewModel: MainViewModel) {
                             contentAlignment = Alignment.Center
                         ) {
                             // Concentric vinyl grooves
-                            Box(modifier = Modifier.size(170.dp).border(0.8.dp, Color(0xFF2A3448).copy(alpha = 0.5f), CircleShape))
-                            Box(modifier = Modifier.size(130.dp).border(0.8.dp, Color(0xFF2A3448).copy(alpha = 0.4f), CircleShape))
-                            Box(modifier = Modifier.size(90.dp).border(0.8.dp, Color(0xFF2A3448).copy(alpha = 0.3f), CircleShape))
+                            Box(modifier = Modifier.size(groove1).border(0.8.dp, Color(0xFF2A3448).copy(alpha = 0.5f), CircleShape))
+                            Box(modifier = Modifier.size(groove2).border(0.8.dp, Color(0xFF2A3448).copy(alpha = 0.4f), CircleShape))
+                            Box(modifier = Modifier.size(groove3).border(0.8.dp, Color(0xFF2A3448).copy(alpha = 0.3f), CircleShape))
 
                             // Center Gold Acoustic Hub
                             Box(
                                 modifier = Modifier
-                                    .size(62.dp)
+                                    .size(hubSize)
                                     .clip(CircleShape)
                                     .background(
                                         Brush.linearGradient(
@@ -265,8 +278,8 @@ fun NowPlayingScreen(viewModel: MainViewModel) {
                                 contentAlignment = Alignment.Center
                             ) {
                                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text("HI-RES", color = StudioColors.Background, fontSize = 11.sp, fontWeight = FontWeight.Black)
-                                    Text(track?.format ?: "FLAC", color = StudioColors.Background, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    Text("HI-RES", color = StudioColors.Background, fontSize = 10.sp, fontWeight = FontWeight.Black)
+                                    Text(track?.format ?: "FLAC", color = StudioColors.Background, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                 }
                             }
                         }
@@ -351,14 +364,37 @@ fun NowPlayingScreen(viewModel: MainViewModel) {
                     overflow = TextOverflow.Ellipsis
                 )
                 Spacer(modifier = Modifier.width(8.dp))
-                // Format Pill
+                // Source Format Pill
+                Surface(
+                    shape = RoundedCornerShape(100.dp),
+                    color = StudioColors.SurfaceElevated,
+                    border = androidx.compose.foundation.BorderStroke(1.dp, StudioColors.Divider)
+                ) {
+                    val srcText = buildString {
+                        append(track?.format ?: "FLAC")
+                        if ((track?.sampleRate ?: 0) > 0) {
+                            append(" ")
+                            append(track?.sampleRate)
+                            append("Hz")
+                        }
+                    }
+                    Text(
+                        text = srcText,
+                        color = StudioColors.Gold,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.width(6.dp))
+                // Signal Path & Route Pill
                 Surface(
                     shape = RoundedCornerShape(100.dp),
                     color = StudioColors.SurfaceElevated,
                     border = androidx.compose.foundation.BorderStroke(1.dp, StudioColors.Divider)
                 ) {
                     Text(
-                        text = "${track?.format ?: "FLAC"} · $signalPathDescription",
+                        text = signalPathDescription,
                         color = if (isBitPerfect) StudioColors.Success else StudioColors.Blue,
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,

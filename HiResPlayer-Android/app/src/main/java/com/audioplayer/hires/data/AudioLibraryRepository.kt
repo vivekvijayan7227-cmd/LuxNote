@@ -75,8 +75,8 @@ class AudioLibraryRepository(private val context: Context) {
             MediaStore.Audio.Media.ALBUM_ID,
             MediaStore.Audio.Media.MIME_TYPE
         )
-        // Find all audio files with duration >= 5 seconds (filtering out short UI sounds)
-        val selection = "${MediaStore.Audio.Media.DURATION} >= 5000"
+        // Query all valid audio files with duration > 0 (including reference test tones and short clips)
+        val selection = "${MediaStore.Audio.Media.DURATION} > 0"
         val sortOrder = "${MediaStore.Audio.Media.TITLE} ASC"
 
         try {

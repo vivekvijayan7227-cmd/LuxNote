@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Build
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.audioplayer.hires.audio.AudioDiagnostics
 import com.audioplayer.hires.audio.AudioTrackPlayer
 import com.audioplayer.hires.audio.BiquadType
 import com.audioplayer.hires.audio.CenterChannelProcessor
@@ -29,6 +30,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.Stack
 import java.util.UUID
 
@@ -139,6 +142,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _fftBands = MutableStateFlow(FloatArray(64) { 0.05f })
     val fftBands: StateFlow<FloatArray> = _fftBands.asStateFlow()
 
+    private val _isVisualizerActive = MutableStateFlow(true)
+    val isVisualizerActive: StateFlow<Boolean> = _isVisualizerActive.asStateFlow()
+
+    fun setVisualizerActive(active: Boolean) {
+        _isVisualizerActive.value = active
+    }
+
+    private var coalescedScanJob: Job? = null
+    private val scanMutex = Mutex()
+    private val scanGeneration = java.util.concurrent.atomic.AtomicLong(0L)
+
     init {
         screenStack.push(StudioScreen.LIBRARY)
 
@@ -202,12 +216,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
-        // Dynamic 60 FPS Spectrum Polling Loop
+        // Dynamic 60 FPS Spectrum Polling Loop (Throttled when inactive)
         viewModelScope.launch {
             while (isActive) {
+                if (!_isVisualizerActive.value) {
+                    delay(250) // Low-power idle when UI is hidden or backgrounded
+                    continue
+                }
+
                 if (playbackManager.playerStatus.value == PlayerStatus.PLAYING) {
                     _fftBands.value = dspPipeline.spectrumAnalyzer.computeBands()
                     playbackManager.pollSpectrumAndClipping()
+                    delay(16) // ~60 FPS
                 } else {
                     val current = _fftBands.value
                     var hasEnergy = false
@@ -215,14 +235,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         current[i] = (current[i] * 0.88f).coerceAtLeast(0.01f)
                         if (current[i] > 0.02f) hasEnergy = true
                     }
-                    if (hasEnergy) _fftBands.value = current.clone()
+                    if (hasEnergy) {
+                        _fftBands.value = current.clone()
+                        delay(16)
+                    } else {
+                        delay(250) // Idle when decay is complete
+                    }
                 }
-                delay(16) // ~60 FPS
             }
         }
     }
 
     fun getNativeEngineDetails(): String = dspPipeline.getEngineDetails()
+
+    fun getAudioDiagnosticsSummary(): String {
+        val underruns = playbackManager.audioPlayer.getUnderrunCount()
+        val zeroWrites = AudioDiagnostics.zeroWriteCount.get()
+        val writeErrors = AudioDiagnostics.writeErrorCount.get()
+        val drainTimeouts = AudioDiagnostics.drainTimeoutCount.get()
+        return "Underruns: $underruns | Zero Writes: $zeroWrites | Drain Timeouts: $drainTimeouts | Write Errors: $writeErrors"
+    }
 
     fun refreshUsbHardware() {
         viewModelScope.launch(Dispatchers.IO) {
@@ -403,123 +435,132 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // High-Speed Non-Blocking Real-Time Scanning & Differential Reconciliation (Finding 09)
+    // High-Speed Non-Blocking Real-Time Scanning & Differential Reconciliation (Finding 09, F12)
     fun scanDeviceMusic(showIndicator: Boolean = false) {
+        val generation = scanGeneration.incrementAndGet()
         viewModelScope.launch(Dispatchers.IO) {
-            if (showIndicator) {
-                withContext(Dispatchers.Main) {
-                    _isImporting.value = true
-                    _importProgress.value = "Scanning local storage for audio files..."
+            scanMutex.withLock {
+                if (generation != scanGeneration.get()) {
+                    return@withLock
                 }
-            }
 
-            val scanResult = repository.scanMediaStoreWithResultAsync()
-            val currentTracks = _libraryTracks.value
-            val context = getApplication<Application>()
-
-            // If scan encountered an explicit error, DO NOT delete tracks or modify playlists
-            if (scanResult is ScanResult.Failure) {
-                android.util.Log.w("MainViewModel", "Scan failed: ${scanResult.error}. Retaining existing library to prevent data loss.")
                 if (showIndicator) {
                     withContext(Dispatchers.Main) {
-                        _isImporting.value = false
-                        _importProgress.value = ""
+                        _isImporting.value = true
+                        _importProgress.value = "Scanning local storage for audio files..."
                     }
                 }
-                return@launch
-            }
 
-            val discoveredTracks = when (scanResult) {
-                is ScanResult.Success -> scanResult.tracks
-                is ScanResult.Partial -> scanResult.tracks
-                is ScanResult.Failure -> emptyList()
-            }
+                val scanResult = repository.scanMediaStoreWithResultAsync()
+                val currentTracks = _libraryTracks.value
+                val context = getApplication<Application>()
 
-            // Fallback to direct physical storage if MediaStore returned empty
-            val finalDiscovered = if (discoveredTracks.isEmpty()) {
-                repository.scanDirectStorageFoldersAsync()
-            } else {
-                discoveredTracks
-            }
-
-            // If both returned 0 but we previously had tracks, DO NOT wipe user's library
-            if (finalDiscovered.isEmpty() && currentTracks.isNotEmpty()) {
-                android.util.Log.w("MainViewModel", "Scan returned 0 tracks while library has ${currentTracks.size} tracks. Retaining library snapshot.")
-                if (showIndicator) {
-                    withContext(Dispatchers.Main) {
-                        _isImporting.value = false
-                        _importProgress.value = ""
-                    }
-                }
-                return@launch
-            }
-
-            val discoveredMap = finalDiscovered.associateBy { it.id }
-            val reconciledTracks = mutableListOf<Track>()
-            val processedIds = mutableSetOf<Long>()
-
-            // 1. Reconcile existing tracks: mark missing as isAvailable = false rather than deleting
-            for (t in currentTracks) {
-                processedIds.add(t.id)
-                val isMediaStore = t.uriString.startsWith("content://media/")
-                if (isMediaStore) {
-                    val fresh = discoveredMap[t.id]
-                    if (fresh != null) {
-                        // Preserve verified metadata if already collected
-                        val preserved = if (t.isMetadataVerified && !fresh.isMetadataVerified) {
-                            fresh.copy(
-                                sampleRate = t.sampleRate,
-                                bitDepth = t.bitDepth,
-                                bitrateKbps = t.bitrateKbps,
-                                isMetadataVerified = true,
-                                isAvailable = true
-                            )
-                        } else {
-                            fresh.copy(isAvailable = true)
+                // If scan encountered an explicit error, DO NOT delete tracks or modify playlists
+                if (scanResult is ScanResult.Failure) {
+                    android.util.Log.w("MainViewModel", "Scan failed: ${scanResult.error}. Retaining existing library to prevent data loss.")
+                    if (showIndicator) {
+                        withContext(Dispatchers.Main) {
+                            _isImporting.value = false
+                            _importProgress.value = ""
                         }
-                        reconciledTracks.add(preserved)
-                    } else {
-                        // Mark unavailable rather than destructive deletion
-                        reconciledTracks.add(t.copy(isAvailable = false))
                     }
+                    return@withLock
+                }
+
+                val discoveredTracks = when (scanResult) {
+                    is ScanResult.Success -> scanResult.tracks
+                    is ScanResult.Partial -> scanResult.tracks
+                    is ScanResult.Failure -> emptyList()
+                }
+
+                // Fallback to direct physical storage if MediaStore returned empty
+                val finalDiscovered = if (discoveredTracks.isEmpty()) {
+                    repository.scanDirectStorageFoldersAsync()
                 } else {
-                    // Check SAF / direct file accessibility
-                    val accessible = try {
-                        val uri = Uri.parse(t.uriString)
-                        if (uri.scheme == "file") {
-                            java.io.File(uri.path ?: "").exists()
-                        } else {
-                            context.contentResolver.openFileDescriptor(uri, "r")?.use { true } ?: false
+                    discoveredTracks
+                }
+
+                // If both returned 0 but we previously had tracks, DO NOT wipe user's library
+                if (finalDiscovered.isEmpty() && currentTracks.isNotEmpty()) {
+                    android.util.Log.w("MainViewModel", "Scan returned 0 tracks while library has ${currentTracks.size} tracks. Retaining library snapshot.")
+                    if (showIndicator) {
+                        withContext(Dispatchers.Main) {
+                            _isImporting.value = false
+                            _importProgress.value = ""
                         }
-                    } catch (_: Exception) {
-                        false
                     }
-                    reconciledTracks.add(t.copy(isAvailable = accessible))
+                    return@withLock
                 }
-            }
 
-            // 2. Add newly discovered tracks
-            for (dt in finalDiscovered) {
-                if (dt.id !in processedIds) {
-                    reconciledTracks.add(dt)
-                    processedIds.add(dt.id)
-                }
-            }
+                val discoveredMap = finalDiscovered.associateBy { it.id }
+                val reconciledTracks = mutableListOf<Track>()
+                val processedIds = mutableSetOf<Long>()
 
-            repository.saveLibraryAsync(reconciledTracks)
+                // 1. Reconcile existing tracks: mark missing as isAvailable = false rather than deleting
+                for (t in currentTracks) {
+                    processedIds.add(t.id)
+                    val isMediaStore = t.uriString.startsWith("content://media/")
+                    if (isMediaStore) {
+                        val fresh = discoveredMap[t.id]
+                        if (fresh != null) {
+                            // Preserve verified metadata if already collected
+                            val preserved = if (t.isMetadataVerified && !fresh.isMetadataVerified) {
+                                fresh.copy(
+                                    sampleRate = t.sampleRate,
+                                    bitDepth = t.bitDepth,
+                                    bitrateKbps = t.bitrateKbps,
+                                    isMetadataVerified = true,
+                                    isAvailable = true
+                                )
+                            } else {
+                                fresh.copy(isAvailable = true)
+                            }
+                            reconciledTracks.add(preserved)
+                        } else {
+                            // Mark unavailable rather than destructive deletion
+                            reconciledTracks.add(t.copy(isAvailable = false))
+                        }
+                    } else {
+                        // Check SAF / direct file accessibility
+                        val accessible = try {
+                            val uri = Uri.parse(t.uriString)
+                            if (uri.scheme == "file") {
+                                java.io.File(uri.path ?: "").exists()
+                            } else {
+                                context.contentResolver.openFileDescriptor(uri, "r")?.use { true } ?: false
+                            }
+                        } catch (_: Exception) {
+                            false
+                        }
+                        reconciledTracks.add(t.copy(isAvailable = accessible))
+                    }
+                }
 
-            withContext(Dispatchers.Main) {
-                _libraryTracks.value = reconciledTracks
-                _folders.value = repository.extractFolders(reconciledTracks)
-                if (playbackManager.activeQueue.value.isEmpty() && reconciledTracks.isNotEmpty()) {
-                    playbackManager.setActiveQueue("queue_1", reconciledTracks.filter { it.isAvailable }, 0)
+                // 2. Add newly discovered tracks
+                for (dt in finalDiscovered) {
+                    if (dt.id !in processedIds) {
+                        reconciledTracks.add(dt)
+                        processedIds.add(dt.id)
+                    }
                 }
-                if (playbackManager.currentTrack.value == null && reconciledTracks.isNotEmpty()) {
-                    loadLyricsForTrack(reconciledTracks[0])
-                }
-                if (showIndicator) {
-                    _isImporting.value = false
-                    _importProgress.value = ""
+
+                repository.saveLibraryAsync(reconciledTracks)
+
+                withContext(Dispatchers.Main) {
+                    if (generation == scanGeneration.get()) {
+                        _libraryTracks.value = reconciledTracks
+                        _folders.value = repository.extractFolders(reconciledTracks)
+                        if (playbackManager.activeQueue.value.isEmpty() && reconciledTracks.isNotEmpty()) {
+                            playbackManager.setActiveQueue("queue_1", reconciledTracks.filter { it.isAvailable }, 0)
+                        }
+                        if (playbackManager.currentTrack.value == null && reconciledTracks.isNotEmpty()) {
+                            loadLyricsForTrack(reconciledTracks[0])
+                        }
+                    }
+                    if (showIndicator) {
+                        _isImporting.value = false
+                        _importProgress.value = ""
+                    }
                 }
             }
         }
@@ -527,7 +568,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun registerRealTimeObserver() {
         repository.registerMediaStoreObserver {
-            scanDeviceMusic(showIndicator = false)
+            coalescedScanJob?.cancel()
+            coalescedScanJob = viewModelScope.launch(Dispatchers.IO) {
+                delay(350) // Coalesce rapid bursts from file operations
+                scanDeviceMusic(showIndicator = false)
+            }
         }
     }
 

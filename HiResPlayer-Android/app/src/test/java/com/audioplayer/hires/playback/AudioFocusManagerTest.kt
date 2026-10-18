@@ -111,4 +111,85 @@ class AudioFocusManagerTest {
         assertEquals(AudioFocusManager.FocusState.NONE, focusManager.focusState)
         assertFalse(focusManager.wasPlayingBeforeFocusLoss)
     }
+
+    @Test
+    fun testTransientLossWhilePausedDoesNotSetWasPlayingOrAutoResume() {
+        var pauseCount = 0
+        var resumeCount = 0
+
+        val focusManager = AudioFocusManager(
+            context = null,
+            onPauseRequested = { pauseCount++ },
+            onResumeRequested = { resumeCount++ },
+            isPlaybackActive = { false } // Player was already paused/stopped before call arrived!
+        )
+
+        // Incoming call occurs
+        focusManager.onAudioFocusChange(AudioManager.AUDIOFOCUS_LOSS_TRANSIENT)
+
+        assertEquals(0, pauseCount) // No pause requested since already paused
+        assertFalse("Must NOT mark wasPlaying when playback was inactive", focusManager.wasPlayingBeforeFocusLoss)
+        assertEquals(AudioFocusManager.FocusState.LOST_TRANSIENT, focusManager.focusState)
+
+        // Call ended, system grants focus back
+        focusManager.onAudioFocusChange(AudioManager.AUDIOFOCUS_GAIN)
+
+        // Playback MUST NOT auto-resume!
+        assertEquals(0, resumeCount)
+        assertEquals(AudioFocusManager.FocusState.GRANTED, focusManager.focusState)
+        assertFalse(focusManager.wasPlayingBeforeFocusLoss)
+    }
+
+    @Test
+    fun testDelayedFocusGrantedTriggersCallback() {
+        var delayedCount = 0
+        var resumeCount = 0
+
+        val focusManager = AudioFocusManager(
+            context = null,
+            onPauseRequested = {},
+            onResumeRequested = { resumeCount++ },
+            onDelayedFocusGranted = { delayedCount++ }
+        )
+
+        // Focus request was delayed by Android system (e.g., active call)
+        // Manually set or simulate delayed state
+        val reqMethod = focusManager.javaClass.getDeclaredField("focusState")
+        reqMethod.isAccessible = true
+        reqMethod.set(focusManager, AudioFocusManager.FocusState.PENDING)
+
+        assertEquals(AudioFocusManager.FocusState.PENDING, focusManager.focusState)
+
+        // System finishes call and delivers AUDIOFOCUS_GAIN
+        focusManager.onAudioFocusChange(AudioManager.AUDIOFOCUS_GAIN)
+
+        assertEquals(1, delayedCount)
+        assertEquals(0, resumeCount) // delayed callback invoked, not transient resume
+        assertEquals(AudioFocusManager.FocusState.GRANTED, focusManager.focusState)
+    }
+
+    @Test
+    fun testDelayedFocusCancelledOnUserPause() {
+        var delayedCount = 0
+
+        val focusManager = AudioFocusManager(
+            context = null,
+            onPauseRequested = {},
+            onResumeRequested = {},
+            onDelayedFocusGranted = { delayedCount++ }
+        )
+
+        val reqMethod = focusManager.javaClass.getDeclaredField("focusState")
+        reqMethod.isAccessible = true
+        reqMethod.set(focusManager, AudioFocusManager.FocusState.PENDING)
+
+        // User paused / cancelled while focus request was pending
+        focusManager.onUserPaused()
+        assertEquals(AudioFocusManager.FocusState.NONE, focusManager.focusState)
+
+        // System later delivers AUDIOFOCUS_GAIN
+        focusManager.onAudioFocusChange(AudioManager.AUDIOFOCUS_GAIN)
+
+        assertEquals(0, delayedCount)
+    }
 }

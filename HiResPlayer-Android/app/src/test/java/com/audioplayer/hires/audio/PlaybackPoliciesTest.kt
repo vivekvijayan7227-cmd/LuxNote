@@ -56,4 +56,43 @@ class PlaybackPoliciesTest {
         assertEquals(10000L, box.takeFor(18L)?.positionMs)
         assertNull(box.takeFor(18L))
     }
+
+    @Test fun audioDiagnosticsCounterTracking() {
+        AudioDiagnostics.resetMetrics()
+        assertEquals(0L, AudioDiagnostics.zeroWriteCount.get())
+        assertEquals(0L, AudioDiagnostics.writeErrorCount.get())
+        assertEquals(0L, AudioDiagnostics.drainTimeoutCount.get())
+        assertEquals(0L, AudioDiagnostics.stallCount.get())
+
+        AudioDiagnostics.recordZeroWrite()
+        AudioDiagnostics.recordZeroWrite()
+        assertEquals(2L, AudioDiagnostics.zeroWriteCount.get())
+
+        AudioDiagnostics.recordWriteError(-3)
+        assertEquals(1L, AudioDiagnostics.writeErrorCount.get())
+
+        AudioDiagnostics.recordDrainTimeout()
+        assertEquals(1L, AudioDiagnostics.drainTimeoutCount.get())
+
+        AudioDiagnostics.recordStall()
+        assertEquals(1L, AudioDiagnostics.stallCount.get())
+
+        AudioDiagnostics.resetMetrics()
+        assertEquals(0L, AudioDiagnostics.zeroWriteCount.get())
+    }
+
+    @Test fun presentationTimestampSeekAnchorAlignment() {
+        val t = PlaybackTimeline()
+        // Seek requested to 30000ms, extractor lands at 29400ms keyframe
+        val seekRequestedMs = 30000L
+        val actualKeyframeEmittedMs = 29400L
+        val initialHead = 10000L
+
+        t.resetForSeek(seekRequestedMs, initialHead, 44100)
+        // When first frame is decoded with presentationTimeUs = 29400ms * 1000, anchor resets to actual timestamp
+        t.resetForSeek(actualKeyframeEmittedMs, initialHead, 44100)
+
+        assertEquals(29400L, t.positionMs(initialHead))
+        assertEquals(30400L, t.positionMs(initialHead + 44100L))
+    }
 }

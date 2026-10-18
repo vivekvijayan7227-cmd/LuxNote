@@ -233,12 +233,31 @@ class PlaybackManager private constructor(private val context: Context) {
 
     fun setAutoResumeEnabled(enabled: Boolean) = setResumeAfterInterruptionEnabled(enabled)
 
+    data class PendingDelayedPlay(
+        val track: Track,
+        val initialSeekMs: Long
+    )
+
+    private var pendingDelayedPlay: PendingDelayedPlay? = null
+
     val audioFocusManager = AudioFocusManager(
         context = context,
         onPauseRequested = { pausePlayback(isInternalInterruption = true) },
         onResumeRequested = {
             if (_isResumeAfterInterruptionEnabled.value) {
                 resumePlayback()
+            }
+        },
+        isPlaybackActive = { _playerStatus.value == PlayerStatus.PLAYING },
+        onDelayedFocusGranted = {
+            val delayed = pendingDelayedPlay
+            pendingDelayedPlay = null
+            if (delayed != null && _playerStatus.value != PlayerStatus.PLAYING) {
+                Log.d("PlaybackManager", "Executing delayed focus playback for ${delayed.track.title}")
+                _currentTrack.value = delayed.track
+                syncForegroundService()
+                audioPlayer.play(delayed.track, initialSeekMs = delayed.initialSeekMs)
+                updateBitPerfectStatus()
             }
         }
     )
@@ -287,14 +306,6 @@ class PlaybackManager private constructor(private val context: Context) {
             }
         }
 
-        val focusGranted = audioFocusManager.requestAudioFocus(isCurrentlyPlaying = _playerStatus.value == PlayerStatus.PLAYING)
-        if (!focusGranted) {
-            Log.w("PlaybackManager", "Audio focus not granted; deferring audible playback")
-            _currentTrack.value = track
-            syncForegroundService()
-            return
-        }
-
         val initialSeekMs = if (pendingRestoredStart != null && pendingRestoredStart?.trackId == track.id) {
             val pos = pendingRestoredStart!!.initialPositionMs
             pendingRestoredStart = null
@@ -304,6 +315,18 @@ class PlaybackManager private constructor(private val context: Context) {
             0L
         }
 
+        val focusGranted = audioFocusManager.requestAudioFocus(isCurrentlyPlaying = _playerStatus.value == PlayerStatus.PLAYING)
+        if (!focusGranted) {
+            Log.w("PlaybackManager", "Audio focus not granted; deferring audible playback")
+            _currentTrack.value = track
+            syncForegroundService()
+            if (audioFocusManager.focusState == AudioFocusManager.FocusState.PENDING) {
+                pendingDelayedPlay = PendingDelayedPlay(track, initialSeekMs)
+            }
+            return
+        }
+
+        pendingDelayedPlay = null
         _currentTrack.value = track
         syncForegroundService()
         audioPlayer.play(track, initialSeekMs = initialSeekMs)
@@ -317,14 +340,6 @@ class PlaybackManager private constructor(private val context: Context) {
         _currentQueueIndex.value = clampedIndex
         val track = tracks[clampedIndex]
 
-        val focusGranted = audioFocusManager.requestAudioFocus(isCurrentlyPlaying = _playerStatus.value == PlayerStatus.PLAYING)
-        if (!focusGranted) {
-            Log.w("PlaybackManager", "Audio focus not granted; deferring audible playback")
-            _currentTrack.value = track
-            syncForegroundService()
-            return
-        }
-
         val initialSeekMs = if (pendingRestoredStart != null && pendingRestoredStart?.trackId == track.id) {
             val pos = pendingRestoredStart!!.initialPositionMs
             pendingRestoredStart = null
@@ -334,6 +349,18 @@ class PlaybackManager private constructor(private val context: Context) {
             0L
         }
 
+        val focusGranted = audioFocusManager.requestAudioFocus(isCurrentlyPlaying = _playerStatus.value == PlayerStatus.PLAYING)
+        if (!focusGranted) {
+            Log.w("PlaybackManager", "Audio focus not granted; deferring audible playback")
+            _currentTrack.value = track
+            syncForegroundService()
+            if (audioFocusManager.focusState == AudioFocusManager.FocusState.PENDING) {
+                pendingDelayedPlay = PendingDelayedPlay(track, initialSeekMs)
+            }
+            return
+        }
+
+        pendingDelayedPlay = null
         _currentTrack.value = track
         syncForegroundService()
         audioPlayer.play(track, initialSeekMs = initialSeekMs)
@@ -346,6 +373,7 @@ class PlaybackManager private constructor(private val context: Context) {
             Log.w("PlaybackManager", "Audio focus not granted on resume")
             return
         }
+        pendingDelayedPlay = null
         if (_playerStatus.value == PlayerStatus.PAUSED) {
             audioPlayer.resume()
         } else if (_currentTrack.value != null) {
@@ -366,12 +394,14 @@ class PlaybackManager private constructor(private val context: Context) {
 
     fun pausePlayback(isInternalInterruption: Boolean = false) {
         if (!isInternalInterruption) {
+            pendingDelayedPlay = null
             audioFocusManager.onUserPaused()
         }
         audioPlayer.pause()
     }
 
     fun stopPlayback() {
+        pendingDelayedPlay = null
         audioFocusManager.abandonAudioFocus()
         pendingRestoredStart = null
         audioPlayer.stop()
@@ -379,6 +409,7 @@ class PlaybackManager private constructor(private val context: Context) {
     }
 
     fun seekTo(positionMs: Long) {
+        pendingDelayedPlay = null
         pendingRestoredStart = null
         audioPlayer.seekTo(positionMs)
         _positionMs.value = positionMs
@@ -562,8 +593,9 @@ class PlaybackManager private constructor(private val context: Context) {
 
         val sinkFormat = if (audioPlayer.isUsingFloatTrack) "32-bit Float" else "16-bit PCM"
         _signalPathDescription.value = when {
-            dspActive -> "DSP Active ($sinkFormat)"
-            else -> "DSP Bypassed ($sinkFormat)"
+            audioPlayer.isUsingFallback -> "Fallback: MediaPlayer"
+            dspActive -> "DSP: Studio 32-bit → $sinkFormat Sink"
+            else -> "Direct PCM → $sinkFormat Sink"
         }
     }
 
